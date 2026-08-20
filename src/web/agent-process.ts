@@ -1029,7 +1029,7 @@ function startRemoteAgentProcess(
   const cmd = buildRemoteLaunchCommand({ workdir, model, continue: hasPriorSession })
 
   try {
-    runTmux(host, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    runTmux(host, ['new-session', '-d', '-s', session, '-x', '80', '-y', '50', cmd], { timeout: 10000 })
     logger.info({ name, session, host, workdir }, 'Remote agent tmux session started')
     // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers and
     // resolves immediately; startRemoteAgentProcess stays synchronous (out of scope).
@@ -1428,7 +1428,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
     const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
-    runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    runTmux(null, ['new-session', '-d', '-s', session, '-x', '80', '-y', '50', cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
 
