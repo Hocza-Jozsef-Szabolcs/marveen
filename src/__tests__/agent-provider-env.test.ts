@@ -62,6 +62,13 @@ describe('resolveProviderEnv', () => {
     expect(r.exportsStr).toContain(`ANTHROPIC_MODEL='qwen3.6:27b'`)
   })
 
+  it('routes a mixed-case minimax model id ("MiniMax-M3") to the minimax provider, not Ollama -- the stored config value can end up mixed-case (measured live 2026-08-20: mag\'s agent-config.json held "MiniMax-M3"), and the discriminator must not silently misroute it', () => {
+    const r = resolveProviderEnv('MiniMax-M3', () => 'mm-secret')
+    expect(r.provider).toBe('minimax')
+    expect(r.exportsStr).toContain('ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic')
+    expect(r.exportsStr).toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000')
+  })
+
   it('never asks the secret lookup for a claude- model', () => {
     let called = false
     resolveProviderEnv('claude-sonnet-5', () => {

@@ -845,9 +845,19 @@ export function resolveProviderEnv(
   model: string,
   secretLookup: (id: string) => string | null,
 ): { provider: ProviderKind; exportsStr: string } {
-  const isClaude = model.startsWith('claude-')
-  const isDeepseek = model.startsWith('deepseek-')
-  const isMinimax = model.startsWith('minimax-')
+  // Case-insensitive: the stored agent-config.json `model` value can end up
+  // mixed-case (measured live 2026-08-20: mag's config held "MiniMax-M3"
+  // instead of the canonical "minimax-m3"). A case-sensitive `.startsWith`
+  // here silently misroutes a mixed-case minimax- id to the Ollama branch
+  // (wrong ANTHROPIC_BASE_URL, and the CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  // override below never fires -- the session then hits the compat layer's
+  // misreported 200K ceiling and gets stuck once a compaction is attempted).
+  // `model` itself (original casing) still goes into the ANTHROPIC_MODEL
+  // export below -- only the routing decision is case-insensitive.
+  const lower = model.toLowerCase()
+  const isClaude = lower.startsWith('claude-')
+  const isDeepseek = lower.startsWith('deepseek-')
+  const isMinimax = lower.startsWith('minimax-')
   // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
   // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
   const isOpenRouter = !isClaude && !isDeepseek && !isMinimax && model.includes('/')
