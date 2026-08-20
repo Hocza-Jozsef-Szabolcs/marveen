@@ -324,6 +324,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
+    // kanban_comments.card_id has no FOREIGN KEY, so an insert against a
+    // nonexistent card previously succeeded silently (200, comment invisible
+    // on every card -- proven incident: a `#<seq>` display reference posted
+    // as if it were the real id-slug, card 666844f2). Existence check first.
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
