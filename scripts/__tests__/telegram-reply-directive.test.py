@@ -108,6 +108,29 @@ def main():
     out4, rc4 = run_hook(db4, "sima szoveg, nincs channel tag")
     check("non-channel prompt: silent", out4 == "", f"stdout={out4!r}")
 
+    # 5. Dashboard-beállítás: TELEGRAM_REPLY_TO_RESOLUTION_ENABLED=0 -> a
+    # feloldás NEM fut le, a direktíva alap-szövege viszont megmarad.
+    db5 = fresh_db()
+    lib5 = load_lib(db5)
+    lib5.log_outbound("marveen", "7225320212", "{922} Nincs más dolgom, jó a pillanat.", message_id="2581")
+    overrides5 = tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="tgoverrides-", delete=False)
+    json.dump({"TELEGRAM_REPLY_TO_RESOLUTION_ENABLED": "0"}, overrides5)
+    overrides5.close()
+    out5, rc5 = run_hook(db5, prompt, extra_env={"CONFIG_OVERRIDES_PATH": overrides5.name})
+    check("disabled: exits 0", rc5 == 0, f"rc={rc5}")
+    check("disabled: directive still present", "TELEGRAM-DIREKTÍVA" in out5)
+    check("disabled: {922} NOT resolved", "{922}" not in out5, f"stdout={out5!r}")
+
+    # 6. Az override fájl LÉTEZIK, de a kulcs nincs benne -> fail-open, marad a feloldás.
+    db6 = fresh_db()
+    lib6 = load_lib(db6)
+    lib6.log_outbound("marveen", "7225320212", "{922} Nincs más dolgom, jó a pillanat.", message_id="2581")
+    overrides6 = tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="tgoverrides-", delete=False)
+    json.dump({}, overrides6)
+    overrides6.close()
+    out6, rc6 = run_hook(db6, prompt, extra_env={"CONFIG_OVERRIDES_PATH": overrides6.name})
+    check("no key in overrides: fail-open, {922} resolved", "{922}" in out6, f"stdout={out6!r}")
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)

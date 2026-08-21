@@ -22,6 +22,13 @@ same store the SessionStart/Stop hooks already read) and, if the referenced
 outbound row starts with a {N} sorszám, names it directly in the directive so
 the model does not need a manual SQL lookup every time. Best-effort only: any
 lookup failure (unknown id, DB unavailable) falls back to the plain directive.
+
+Toggle: dashboard Beállítások / Rendszer -> TELEGRAM_REPLY_TO_RESOLUTION_ENABLED
+(config-registry.ts). Read directly from store/config-overrides.json, since
+this is a standalone Python subprocess with no access to the Node settings-
+store cache. Fail-open (missing file, missing key, unparsable JSON -> treated
+as enabled) so a settings-store outage never silently disables the base
+reply-tool directive, only ever the optional resolution add-on.
 """
 import sys
 import os
@@ -37,15 +44,39 @@ CHANNEL_RX = re.compile(
 
 SORSZAM_RX = re.compile(r'^\{(\d+)\}')
 
+RESOLUTION_SETTING_KEY = "TELEGRAM_REPLY_TO_RESOLUTION_ENABLED"
+
 
 def _attr(attrs, name):
     m = re.search(name + r'="([^"]*)"', attrs)
     return m.group(1) if m else None
 
 
+def _resolution_enabled():
+    """A TELEGRAM_REPLY_TO_RESOLUTION_ENABLED dashboard-kapcsoló állása.
+    Fail-open: hiányzó/sérült fájl vagy hiányzó kulcs -> True (bekapcsolva,
+    a korábbi, kapcsoló nélküli viselkedés)."""
+    path = os.environ.get("CONFIG_OVERRIDES_PATH")
+    if not path:
+        import ledger_lib
+        path = os.path.join(ledger_lib._install_dir(), "store", "config-overrides.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and RESOLUTION_SETTING_KEY in data:
+            raw = str(data[RESOLUTION_SETTING_KEY]).strip().lower()
+            return raw not in ("0", "false")
+    except Exception:
+        pass
+    return True
+
+
 def _resolved_reply_note(cwd, reply_to_message_id):
-    """'Ez valasz a sajat {N}-es uzenetedre.' ha feloldhato, kulonben None."""
+    """'Ez valasz a sajat {N}-es uzenetedre.' ha feloldhato es a kapcsolo be
+    van kapcsolva, kulonben None."""
     if not reply_to_message_id:
+        return None
+    if not _resolution_enabled():
         return None
     try:
         import ledger_lib
