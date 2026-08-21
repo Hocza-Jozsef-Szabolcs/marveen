@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { logger } from './logger.js'
 
-// Microsoft Graph mail for a single M365 mailbox (marveen@pecibt.hu), via the
+// Microsoft Graph mail for a single M365 mailbox, via the
 // app-only client-credentials flow. The app registration holds NO tenant-wide
 // Mail.* Graph permission; access is scoped to one mailbox by an Exchange
 // Online RBAC ManagementScope, so this module can only ever touch that box.
