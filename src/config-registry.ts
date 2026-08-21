@@ -419,8 +419,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'TELEGRAM_REPLY_TO_RESOLUTION_ENABLED',
     type: 'boolean',
-    default: '1',
-    description: 'Ha egy Telegram-üzenet a válasz gombbal érkezik (reply_to_message_id), a telegram-reply-directive.py hook automatikusan feloldja, melyik saját {N} sorszámú üzenetre válaszolt a küldő, és beleírja a direktívába. Kikapcsolva a hivatkozás feloldása elmarad, a direktíva alap-szövege (reply tool kényszerítése) változatlanul megy. Azonnal érvényes, nincs hozzá újraindítás -- a hook minden bejövő üzenetnél újra elindul.',
+    default: '0',
+    description: 'Ha egy Telegram-üzenet a válasz gombbal érkezik (reply_to_message_id), a telegram-reply-directive.py hook automatikusan feloldja, melyik saját {N} sorszámú üzenetre válaszolt a küldő, és beleírja a direktívába. Alapértelmezetten KIKAPCSOLVA (opt-in) -- nem minden telepítésnek van szüksége rá. Bekapcsolva a mögötte álló adat megbízhatósága a Telegram plugin telepített forrásán múlik. A direktíva alap-szövege (reply tool kényszerítése) a kapcsolótól függetlenül mindig megy. Azonnal érvényes, nincs hozzá újraindítás -- a hook minden bejövő üzenetnél újra elindul.',
     module: 'system',
     secret: false,
     requiresRestart: false,

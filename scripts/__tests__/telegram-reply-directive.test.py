@@ -63,16 +63,24 @@ def check(name, cond, detail=""):
 
 
 def main():
-    # 1. Reply with a resolvable reply_to_message_id -> directive names the {N} sorszám
-    db = fresh_db()
-    lib = load_lib(db)
-    lib.log_outbound("marveen", "7225320212", "{922} Nincs más dolgom, jó a pillanat.", message_id="2581")
     prompt = (
         '<channel source="plugin:telegram:telegram" chat_id="7225320212" '
         'message_id="2585" reply_to_message_id="2581" user="7225320212" '
         'user_id="7225320212" ts="2026-08-21T15:00:00.000Z">\nVálasz teszt\n</channel>'
     )
-    out, rc = run_hook(db, prompt)
+
+    def overrides_file(data):
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="tgoverrides-", delete=False)
+        json.dump(data, f)
+        f.close()
+        return f.name
+
+    # 1. Kapcsolo BEKAPCSOLVA (override='1') -> resolvable reply_to_message_id
+    # eseten a direktiva megnevezi a {N} sorszamot.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_outbound("marveen", "7225320212", "{922} Nincs más dolgom, jó a pillanat.", message_id="2581")
+    out, rc = run_hook(db, prompt, extra_env={"CONFIG_OVERRIDES_PATH": overrides_file({"TELEGRAM_REPLY_TO_RESOLUTION_ENABLED": "1"})})
     check("exits 0", rc == 0, f"rc={rc}")
     check("mentions chat_id", "chat_id=7225320212" in out)
     check("resolves {922}", "{922}" in out, f"stdout={out!r}")
@@ -121,7 +129,8 @@ def main():
     check("disabled: directive still present", "TELEGRAM-DIREKTÍVA" in out5)
     check("disabled: {922} NOT resolved", "{922}" not in out5, f"stdout={out5!r}")
 
-    # 6. Az override fájl LÉTEZIK, de a kulcs nincs benne -> fail-open, marad a feloldás.
+    # 6. Az override fájl LÉTEZIK, de a kulcs nincs benne -> alapertelmezes SZERINT
+    # KIKAPCSOLVA (a config-registry.ts default '0'-ja), a feloldas nem fut le.
     db6 = fresh_db()
     lib6 = load_lib(db6)
     lib6.log_outbound("marveen", "7225320212", "{922} Nincs más dolgom, jó a pillanat.", message_id="2581")
@@ -129,7 +138,16 @@ def main():
     json.dump({}, overrides6)
     overrides6.close()
     out6, rc6 = run_hook(db6, prompt, extra_env={"CONFIG_OVERRIDES_PATH": overrides6.name})
-    check("no key in overrides: fail-open, {922} resolved", "{922}" in out6, f"stdout={out6!r}")
+    check("no key in overrides: default OFF, {922} NOT resolved", "{922}" not in out6, f"stdout={out6!r}")
+
+    # 7. Nincs is override-fájl (a CONFIG_OVERRIDES_PATH nem letezo utvonalra mutat)
+    # -> ugyanaz az alapertelmezett-kikapcsolt viselkedes, nem hasal el.
+    db7 = fresh_db()
+    lib7 = load_lib(db7)
+    lib7.log_outbound("marveen", "7225320212", "{922} Nincs más dolgom, jó a pillanat.", message_id="2581")
+    out7, rc7 = run_hook(db7, prompt, extra_env={"CONFIG_OVERRIDES_PATH": "/nonexistent/tgoverrides.json"})
+    check("missing overrides file: exits 0", rc7 == 0, f"rc={rc7}")
+    check("missing overrides file: default OFF, {922} NOT resolved", "{922}" not in out7, f"stdout={out7!r}")
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

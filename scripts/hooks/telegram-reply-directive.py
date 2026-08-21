@@ -24,11 +24,12 @@ the model does not need a manual SQL lookup every time. Best-effort only: any
 lookup failure (unknown id, DB unavailable) falls back to the plain directive.
 
 Toggle: dashboard Beállítások / Rendszer -> TELEGRAM_REPLY_TO_RESOLUTION_ENABLED
-(config-registry.ts). Read directly from store/config-overrides.json, since
-this is a standalone Python subprocess with no access to the Node settings-
-store cache. Fail-open (missing file, missing key, unparsable JSON -> treated
-as enabled) so a settings-store outage never silently disables the base
-reply-tool directive, only ever the optional resolution add-on.
+(config-registry.ts), default OFF (Józsi, 2026-08-21: not every install needs
+this, so it must be opt-in, not opt-out). Read directly from
+store/config-overrides.json, since this is a standalone Python subprocess
+with no access to the Node settings-store cache. Missing file / missing key /
+unparsable JSON all resolve to the registry default (disabled) -- this never
+affects the base reply-tool directive, only the optional resolution add-on.
 """
 import sys
 import os
@@ -54,8 +55,8 @@ def _attr(attrs, name):
 
 def _resolution_enabled():
     """A TELEGRAM_REPLY_TO_RESOLUTION_ENABLED dashboard-kapcsoló állása.
-    Fail-open: hiányzó/sérült fájl vagy hiányzó kulcs -> True (bekapcsolva,
-    a korábbi, kapcsoló nélküli viselkedés)."""
+    A registry-default OFF (opt-in) -- hiányzó/sérült fájl vagy hiányzó kulcs
+    tehát ugyanúgy kikapcsolt állapotot jelent, mint egy explicit '0'."""
     path = os.environ.get("CONFIG_OVERRIDES_PATH")
     if not path:
         import ledger_lib
@@ -68,7 +69,7 @@ def _resolution_enabled():
             return raw not in ("0", "false")
     except Exception:
         pass
-    return True
+    return False
 
 
 def _resolved_reply_note(cwd, reply_to_message_id):
