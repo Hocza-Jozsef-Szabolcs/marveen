@@ -227,6 +227,27 @@ def open_question_with_age(agent_id):
         con.close()
 
 
+def outbound_text_by_message_id(agent_id, message_id):
+    """The text of a previously logged OUTBOUND message, looked up by its
+    Telegram message_id -- resolves an inbound reply_to_message_id back to the
+    {sorszám} the agent itself put at the start of that message. Returns the
+    text, or None if no matching outbound row exists (unknown id, or the row
+    predates this ledger)."""
+    if not message_id:
+        return None
+    con = connect()
+    try:
+        row = con.execute(
+            "SELECT text FROM conversation_log"
+            " WHERE agent_id=? AND direction='out' AND message_id=?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (str(agent_id), str(message_id)),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
+
 def open_question(agent_id):
     """The most recent inbound with NO later outbound (the unanswered question),
     or None. Returns (chat_id, message_id, text, ts, attachment_kind,
