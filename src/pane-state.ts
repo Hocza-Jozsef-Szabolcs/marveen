@@ -659,6 +659,61 @@ export function detectPermissionMode(pane: string): string | null {
   return /\? for shortcuts/.test(pane) ? 'default' : null
 }
 
+// NARROW-PANE FALLBACK for IDLE_FOOTER_RX. `tmux capture-pane -p` hard-
+// truncates every row to the pane's column count -- it never soft-wraps a
+// single logical row onto a second terminal line -- so once a pane narrows
+// below roughly 60 columns, IDLE_FOOTER_RX's REQUIRED TAIL (the
+// "(shift+tab to cycle)" hint, or the "· ... ctrl+t/↓ to manage/← for
+// agents" suffix) is truncated away before it ever renders, and the regex
+// has nothing left to anchor on.
+//
+// Measured incident (card `panefooterszelesseg`, 2026-08-06 03:30): a
+// sub-agent split pane narrowed the main `agent-design` tmux pane from 80
+// to 23 columns. The footer rendered as bare "bypass permissions" with the
+// anchor gone entirely (not wrapped, just absent); isSessionReadyForPrompt
+// stayed false, and 12 inter-agent messages queued undelivered for 14.5h
+// because nothing else in the pane signalled busy either.
+//
+// EVERY idle-mode footer variant (bypass permissions / accept edits /
+// plan mode / auto mode / manual mode) shares one prefix that survives
+// truncation down to a handful of columns: the spinner-mode glyph
+// (⏵⏵ / ⏵ / ⏸) immediately followed by the first mode word. Scoped to the
+// pane's ACTUAL LAST LINE only -- the live footer is always the last
+// rendered row (same discipline as detectsThinkingBlockError's
+// bottom-up footer search), so this can never match a footer phrase
+// quoted in scrollback above it. Gated on the pane's rendered column
+// WIDTH being narrow (read off the box separator -- the same
+// `'─'.repeat(width)` tmux itself renders): at normal width the full
+// IDLE_FOOTER_RX anchor already renders intact, so this fallback only
+// ever fires on a genuinely truncated render, never a wide healthy pane.
+const NARROW_PANE_WIDTH_THRESHOLD = 60
+const NARROW_FOOTER_GLYPH_RX = /^\s*[⏵⏸]+\s*\S/
+
+// The pane's rendered column count, read off the most recent (bottom-most)
+// BOX_SEP_RX separator line -- tmux renders that separator as exactly
+// `'─'.repeat(width)`, so its length IS the live column count. Returns
+// null when no separator is present (nothing to measure against, e.g. a
+// first-run dialog that uses rounded box-drawing borders instead).
+function paneColumnWidth(paneLines: string[]): number | null {
+  for (let i = paneLines.length - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(paneLines[i])) return paneLines[i].length
+  }
+  return null
+}
+
+// Resolves to the same footer-line index IDLE_FOOTER_RX would find, with
+// the narrow-pane fallback above applied when the normal anchor is absent.
+function idleFooterLineIndex(paneLines: string[]): number {
+  const wideIdx = paneLines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  if (wideIdx >= 0) return wideIdx
+  const width = paneColumnWidth(paneLines)
+  if (width != null && width < NARROW_PANE_WIDTH_THRESHOLD) {
+    const lastIdx = paneLines.length - 1
+    if (NARROW_FOOTER_GLYPH_RX.test(paneLines[lastIdx])) return lastIdx
+  }
+  return -1
+}
+
 export function detectPaneState(
   pane: string,
   opts: DetectPaneStateOptions = {},
@@ -693,7 +748,8 @@ export function detectPaneState(
   // defer rather than pile a second prompt on.
   if (detectsPastePlaceholder(pane)) return 'busy'
 
-  if (!IDLE_FOOTER_RX.test(pane)) {
+  const footerIdx = idleFooterLineIndex(paneLines)
+  if (footerIdx < 0) {
     // Footer-less fresh-session / welcome-screen: a PARKED \u276F input box still
     // means the agent has a delivered message waiting to submit. Classify it
     // 'typing' (not 'unknown') so the stuck-input recovery stack can see and
@@ -711,9 +767,8 @@ export function detectPaneState(
   // Find the input box: two BOX_SEP_RX lines framing the current prompt.
   // Scan UPWARDS from the footer so we stay inside the live box and
   // don't pick up historical ❯ lines from scrollback.
-  const lines = pane.split('\n')
-  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
-  if (footerIdx >= 0) {
+  const lines = paneLines
+  {
     let bottomSep = -1
     for (let i = footerIdx - 1; i >= 0; i--) {
       if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
