@@ -9,6 +9,7 @@ import {
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
+  getLastCommentAuthorsForAllCards,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -111,7 +112,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    // A "Fuggosegek" dashboard-szuro (in_progress/waiting kartyak, amiken az
+    // utolso komment szerzoje nem az owner) forras-mezoje -- nulla, ha a
+    // kartyanak meg nincs kommentje.
+    const lastCommentAuthorByCard = getLastCommentAuthorsForAllCards()
+    const cards = listKanbanCards().map((card) => ({
+      ...card,
+      labels: labelsByCard.get(card.id) ?? [],
+      last_comment_author: lastCommentAuthorByCard.get(card.id) ?? null,
+    }))
     jsonMaybeGzip(req, res, cards)
     return true
   }
@@ -131,10 +140,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     json(res, {
       urgent: summary.urgent.map(slim),
       waiting: summary.waiting.map(slim),
+      staleBlockers: summary.staleBlockers.map((r) => ({
+        id: r.id, title: r.title, referencedSeq: r.referencedSeq,
+      })),
       counts: {
         urgent: summary.urgent.length,
         in_progress: summary.in_progress.length,
         waiting: summary.waiting.length,
+        staleBlockers: summary.staleBlockers.length,
       },
     })
     return true

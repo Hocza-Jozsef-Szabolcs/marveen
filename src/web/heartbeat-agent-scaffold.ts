@@ -212,11 +212,18 @@ When you receive the heartbeat prompt:
      \`\`\`
 
      It returns exactly what this section may report:
-     \`{"urgent":[...], "waiting":[...], "counts":{...}}\`, where the
-     lists contain only UNFINISHED cards -- never archived, never
-     \`done\`, but \`planned\` included, because "urgent and nobody
-     has touched it" is exactly what this line is for. Report the ids
-     and titles it gives you and nothing else.
+     \`{"urgent":[...], "waiting":[...], "staleBlockers":[...], "counts":{...}}\`,
+     where the urgent/waiting lists contain only UNFINISHED cards --
+     never archived, never \`done\`, but \`planned\` included, because
+     "urgent and nobody has touched it" is exactly what this line is
+     for. Report the ids and titles it gives you and nothing else.
+
+     \`staleBlockers\` is a separate, narrower signal: an open card
+     whose own text uses blocking language AND cites another card by
+     \`#<seq>\` that is by now \`done\` or archived -- its stated
+     blocker no longer holds. Report each entry as
+     "\`<id>\` cites #<referencedSeq>, already closed" and nothing more:
+     do not guess WHY the card was not moved.
 
      Two things this replaces, both measured: the old instruction told
      you to write the filter yourself, and on 2026-08-04 the 09:00
@@ -287,6 +294,7 @@ When you receive the heartbeat prompt:
    - in_progress: <N>
    - waiting: <N> (<short titles>)
    - planned: <N>
+   - stale blokkolo-hivatkozas: <N> (<id cites #referencedSeq, already closed>)
 
    ### Tasks
    - enabled schedules: <N>

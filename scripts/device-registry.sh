@@ -316,7 +316,7 @@ PY
       transport=""
       while read -r t; do
         [ -z "$t" ] && continue
-        if [ "$("$ADB" -s "$t" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')" = "$serial" ]; then
+        if [ "$("$ADB" -s "$t" shell getprop ro.serialno < /dev/null 2>/dev/null | tr -d '\r\n')" = "$serial" ]; then
           transport="$t"
           break
         fi
