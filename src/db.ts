@@ -385,20 +385,58 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_comments(card_id)`)
 
-  // Status-change audit trail: one row per real status transition so the board
-  // can answer "who moved this card, when, from/to status". Written by
-  // moveKanbanCard only when the status actually changes.
+  // Card audit trail: one row per real status transition or title overwrite,
+  // so the board can answer "who changed this card, when, what changed".
+  // event_type='status' rows are written by moveKanbanCard (from_status/to_status
+  // filled, old_title/new_title NULL); event_type='title' rows are written by
+  // updateKanbanCard (old_title/new_title filled, from_status/to_status NULL).
   db.exec(`
     CREATE TABLE IF NOT EXISTS kanban_card_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       card_id TEXT NOT NULL,
+      event_type TEXT NOT NULL DEFAULT 'status',
       from_status TEXT,
-      to_status TEXT NOT NULL,
+      to_status TEXT,
+      old_title TEXT,
+      new_title TEXT,
       actor TEXT,
       created_at INTEGER NOT NULL
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+  // Migration: pre-existing installs created this table with to_status NOT NULL
+  // and no event_type/old_title/new_title columns (#518, status-change-only).
+  // SQLite can't drop a NOT NULL constraint or add columns to an already-frozen
+  // CREATE TABLE via ALTER, so rebuild when the old shape is detected. Existing
+  // rows are all status transitions -> event_type='status', old_title/new_title
+  // stay NULL. Idempotent: a fresh or already-migrated DB has no 'NOT NULL' on
+  // to_status and this is a no-op.
+  try {
+    const eventsSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='kanban_card_events'").get() as { sql: string } | undefined
+    if (eventsSchema?.sql && /to_status\s+TEXT\s+NOT\s+NULL/i.test(eventsSchema.sql)) {
+      db.exec(`
+        CREATE TABLE kanban_card_events_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          card_id TEXT NOT NULL,
+          event_type TEXT NOT NULL DEFAULT 'status',
+          from_status TEXT,
+          to_status TEXT,
+          old_title TEXT,
+          new_title TEXT,
+          actor TEXT,
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO kanban_card_events_new (id, card_id, event_type, from_status, to_status, actor, created_at)
+          SELECT id, card_id, 'status', from_status, to_status, actor, created_at
+          FROM kanban_card_events;
+        DROP TABLE kanban_card_events;
+        ALTER TABLE kanban_card_events_new RENAME TO kanban_card_events;
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+    }
+  } catch (err) {
+    logger.warn({ err }, 'kanban_card_events event_type migration failed -- continuing')
+  }
 
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
@@ -1715,15 +1753,24 @@ export function createKanbanCard(card: {
   )
 }
 
-export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
+export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>, actor?: string): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
-  return db.prepare(
+  const changed = db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  // Audit trail: record a title-overwrite event only when the title actually
+  // changed value (kanban_card_events, event_type='title') -- see
+  // moveKanbanCard for the status-change counterpart.
+  if (changed && fields.title !== undefined && fields.title !== card.title) {
+    db.prepare(
+      "INSERT INTO kanban_card_events (card_id, event_type, old_title, new_title, actor, created_at) VALUES (?, 'title', ?, ?, ?, ?)"
+    ).run(id, card.title, fields.title, actor ?? null, now)
+  }
+  return changed
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
@@ -1740,7 +1787,7 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   ).run(status, sortOrder, now, id).changes > 0
   if (changed && prev !== undefined && prev !== status) {
     db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+      "INSERT INTO kanban_card_events (card_id, event_type, from_status, to_status, actor, created_at) VALUES (?, 'status', ?, ?, ?, ?)"
     ).run(id, prev, status, actor ?? null, now)
   }
   return changed
@@ -1845,14 +1892,48 @@ export function getKanbanComments(cardId: string): KanbanComment[] {
 export interface KanbanCardEvent {
   id: number
   card_id: string
+  event_type: 'status' | 'title'
   from_status: string | null
-  to_status: string
+  to_status: string | null
+  old_title: string | null
+  new_title: string | null
   actor: string | null
   created_at: number
 }
 
 export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
   return db.prepare('SELECT * FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardEvent[]
+}
+
+export interface ImportableKanbanCardEvent {
+  card_id: string
+  event_type?: string
+  from_status?: string | null
+  to_status?: string | null
+  old_title?: string | null
+  new_title?: string | null
+  actor?: string | null
+  created_at: number
+}
+
+// Fleet-backup restore path for kanban_card_events. event_type defaults to
+// 'status' so a pre-title-audit export (#518, written before old_title/new_title
+// existed) still imports correctly. A row is dropped, not guessed, when it lacks the
+// field its own event_type needs (to_status for 'status', new_title for
+// 'title') -- an incomplete event is worse than a missing one. Idempotent on
+// (card_id, created_at, event_type, to_status, new_title) so re-running the
+// same backup import never duplicates a row.
+export function importKanbanCardEvent(ev: ImportableKanbanCardEvent): void {
+  if (!ev.card_id) return
+  const eventType = ev.event_type ?? 'status'
+  if (eventType === 'title' ? !ev.new_title : !ev.to_status) return
+  const exists = db.prepare(
+    'SELECT 1 FROM kanban_card_events WHERE card_id = ? AND created_at = ? AND event_type = ? AND to_status IS ? AND new_title IS ?'
+  ).get(ev.card_id, ev.created_at, eventType, ev.to_status ?? null, ev.new_title ?? null)
+  if (exists) return
+  db.prepare(
+    'INSERT INTO kanban_card_events (card_id, event_type, from_status, to_status, old_title, new_title, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(ev.card_id, eventType, ev.from_status ?? null, ev.to_status ?? null, ev.old_title ?? null, ev.new_title ?? null, ev.actor ?? null, ev.created_at)
 }
 
 // Lookup a kanban card's `seq` (its sqlite rowid) by the 8-char hex id stored

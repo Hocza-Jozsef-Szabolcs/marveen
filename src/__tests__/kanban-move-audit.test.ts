@@ -27,6 +27,7 @@ describe('kanban move audit trail', () => {
     const events = getKanbanCardEvents('card-a')
     expect(events).toHaveLength(1)
     expect(events[0].card_id).toBe('card-a')
+    expect(events[0].event_type).toBe('status')
     expect(events[0].from_status).toBe('planned')
     expect(events[0].to_status).toBe('in_progress')
     expect(events[0].actor).toBe('marveen')
