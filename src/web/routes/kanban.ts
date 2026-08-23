@@ -252,8 +252,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
+    const { actor, ...fields } = JSON.parse(body.toString())
+    if (fields.status === 'done' && getKanbanCard(id) && getKanbanComments(id).length === 0) {
+      json(res, { error: 'A "done" státuszhoz lezáró komment szükséges' }, 400)
+      return true
+    }
+    if (updateKanbanCard(id, fields, actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -271,6 +275,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor } = JSON.parse(body.toString())
+    if (status === 'done' && getKanbanCard(id) && getKanbanComments(id).length === 0) {
+      json(res, { error: 'A "done" státuszhoz lezáró komment szükséges' }, 400)
+      return true
+    }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor)) {
       // Wake the assigned agent once when the card enters in_progress.
       if (status === 'in_progress') fireKanbanDispatch(id)

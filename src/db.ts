@@ -1715,15 +1715,25 @@ export function createKanbanCard(card: {
   )
 }
 
-export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
+export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>, actor?: string): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
-  return db.prepare(
+  const changed = db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  // Audit trail: PUT /api/kanban/:id can change status just like POST .../move,
+  // but had no event -- a status change made through PUT left no trace in
+  // kanban_card_events. Same shape as moveKanbanCard's insert, only fired on a
+  // real transition (not a same-status field update).
+  if (changed && fields.status !== undefined && fields.status !== card.status) {
+    db.prepare(
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, card.status, fields.status, actor ?? null, now)
+  }
+  return changed
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
