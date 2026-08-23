@@ -291,7 +291,15 @@ interface SystemInfo {
 interface HeartbeatData {
   timestamp: Date
   calendar: CalendarEvent[]
-  kanban: { urgent: number; in_progress: number; waiting: number; urgentLabels: string[]; waitingLabels: string[] }
+  kanban: {
+    urgent: number
+    in_progress: number
+    waiting: number
+    urgentLabels: string[]
+    waitingLabels: string[]
+    staleBlockers: number
+    staleBlockerLabels: string[]
+  }
   system: SystemInfo
   tasks: { count: number; nextRun: number | null }
 }
@@ -321,6 +329,12 @@ export function formatHeartbeatCardLabel(card: { id: string; title: string }): s
   return `[${card.id}] ${title}`
 }
 
+/** Label for a stale-blocker reference: which open card, which now-closed
+ * card it still cites as its blocker. */
+export function formatStaleBlockerLabel(ref: { id: string; title: string; referencedSeq: number }): string {
+  return `${formatHeartbeatCardLabel(ref)} -> #${ref.referencedSeq} mar lezart`
+}
+
 function collectKanban(): HeartbeatData['kanban'] {
   try {
     const summary = getHeartbeatKanbanSummary()
@@ -330,10 +344,12 @@ function collectKanban(): HeartbeatData['kanban'] {
       waiting: summary.waiting.length,
       urgentLabels: summary.urgent.map(formatHeartbeatCardLabel),
       waitingLabels: summary.waiting.map(formatHeartbeatCardLabel),
+      staleBlockers: summary.staleBlockers.length,
+      staleBlockerLabels: summary.staleBlockers.map(formatStaleBlockerLabel),
     }
   } catch (err) {
     logger.error({ err }, 'Heartbeat: kanban fetch failed')
-    return { urgent: 0, in_progress: 0, waiting: 0, urgentLabels: [], waitingLabels: [] }
+    return { urgent: 0, in_progress: 0, waiting: 0, urgentLabels: [], waitingLabels: [], staleBlockers: 0, staleBlockerLabels: [] }
   }
 }
 
@@ -430,6 +446,11 @@ function buildAgentPrompt(data: HeartbeatData): string {
   prompt += `- Waiting: ${data.kanban.waiting}`
   if (data.kanban.waitingLabels.length > 0) {
     prompt += ` ${wrapUntrusted('kanban-waiting-titles', data.kanban.waitingLabels.join(', '))}`
+  }
+  prompt += '\n'
+  prompt += `- Stale blokkolo-hivatkozas: ${data.kanban.staleBlockers}`
+  if (data.kanban.staleBlockerLabels.length > 0) {
+    prompt += ` ${wrapUntrusted('kanban-stale-blocker-titles', data.kanban.staleBlockerLabels.join(', '))}`
   }
   prompt += '\n\n'
 

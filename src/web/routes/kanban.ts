@@ -140,10 +140,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     json(res, {
       urgent: summary.urgent.map(slim),
       waiting: summary.waiting.map(slim),
+      staleBlockers: summary.staleBlockers.map((r) => ({
+        id: r.id, title: r.title, referencedSeq: r.referencedSeq,
+      })),
       counts: {
         urgent: summary.urgent.length,
         in_progress: summary.in_progress.length,
         waiting: summary.waiting.length,
+        staleBlockers: summary.staleBlockers.length,
       },
     })
     return true

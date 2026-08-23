@@ -5,6 +5,7 @@ import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './c
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
+import { computeStaleBlockerRefs, type StaleBlockerCardInput, type StaleBlockerRef } from './kanban-stale-blocker-refs.js'
 
 let db: Database.Database
 
@@ -2008,6 +2009,7 @@ export interface HeartbeatKanbanSummary {
   urgent: KanbanCard[]
   in_progress: KanbanCard[]
   waiting: KanbanCard[]
+  staleBlockers: StaleBlockerRef[]
 }
 
 /**
@@ -2039,11 +2041,37 @@ export const HEARTBEAT_IN_PROGRESS_SQL =
 export const HEARTBEAT_WAITING_SQL =
   "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
 
+// Inputs for computeStaleBlockerRefs (kanban-stale-blocker-refs.ts): every open
+// card (a candidate that might cite a blocker), every closed seq (what counts
+// as "already resolved"), and every comment text keyed by card id (the
+// blocking language or the reference itself often lives in a comment, not the
+// description).
+export const STALE_BLOCKER_OPEN_CARDS_SQL =
+  "SELECT rowid AS seq, id, title, description FROM kanban_cards WHERE archived_at IS NULL AND status != 'done'"
+export const STALE_BLOCKER_CLOSED_SEQS_SQL =
+  "SELECT rowid AS seq FROM kanban_cards WHERE status = 'done' OR archived_at IS NOT NULL"
+
+export function getStaleBlockerRefs(): StaleBlockerRef[] {
+  const openCards = db.prepare(STALE_BLOCKER_OPEN_CARDS_SQL).all() as StaleBlockerCardInput[]
+  const closedRows = db.prepare(STALE_BLOCKER_CLOSED_SEQS_SQL).all() as { seq: number }[]
+  const closedSeqs = new Set(closedRows.map((r) => r.seq))
+  const commentRows = db.prepare('SELECT card_id, content FROM kanban_comments').all() as
+    { card_id: string; content: string }[]
+  const commentsByCardId = new Map<string, string[]>()
+  for (const row of commentRows) {
+    const arr = commentsByCardId.get(row.card_id) ?? []
+    arr.push(row.content)
+    commentsByCardId.set(row.card_id, arr)
+  }
+  return computeStaleBlockerRefs(openCards, closedSeqs, commentsByCardId)
+}
+
 export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
   const urgent = db.prepare(HEARTBEAT_URGENT_SQL).all() as KanbanCard[]
   const in_progress = db.prepare(HEARTBEAT_IN_PROGRESS_SQL).all() as KanbanCard[]
   const waiting = db.prepare(HEARTBEAT_WAITING_SQL).all() as KanbanCard[]
-  return { urgent, in_progress, waiting }
+  const staleBlockers = getStaleBlockerRefs()
+  return { urgent, in_progress, waiting, staleBlockers }
 }
 
 // --- Agent Messages ---
