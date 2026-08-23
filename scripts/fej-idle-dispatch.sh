@@ -32,17 +32,27 @@ if [ -z "$idle" ]; then
 fi
 
 for fej in $idle; do
-  card=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc limit 1;")
-  if [ -n "$card" ]; then
+  cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+  if [ -z "$cards" ]; then
+    echo "TETLEN: $fej -- nincs sajat nevre allitott planned kartyaja"
+    continue
+  fi
+  kiosztva=0
+  for card in $cards; do
     echo "TETLEN: $fej -> $card kiosztasa..."
     # `if` az egyetlen `set -e`-kivetel: egy blokkolt fej (nemnulla rc) NE szakitsa meg a ciklust,
     # kulonben az abecerendben UTANA kovetkezo fejek egyike sem kap eselyt kiosztasra.
-    if ! ki=$(bash scripts/kartya-kiosztas.sh "$card" "$fej" 2>&1); then
+    if ki=$(bash scripts/kartya-kiosztas.sh "$card" "$fej" 2>&1); then
       echo "  $ki"
+      kiosztva=1
+      break
     else
+      # Ez a kartya elbukott a kapun -- a kovetkezo planned kartyaval probalkozunk, mielott
+      # veglegesen MEGALLT-ot irnank az egesz fejre.
       echo "  $ki"
     fi
-  else
-    echo "TETLEN: $fej -- nincs sajat nevre allitott planned kartyaja"
+  done
+  if [ "$kiosztva" = "0" ]; then
+    echo "TETLEN: $fej -- MINDEGYIK planned kartyaja elbukott a kiosztas-kapun"
   fi
 done

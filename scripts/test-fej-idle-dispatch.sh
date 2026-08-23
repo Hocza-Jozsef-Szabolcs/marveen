@@ -69,13 +69,18 @@ CREATE TABLE kanban_cards (
 );
 SQLEOF
 
-  # A kiosztas-mock: naplozza a hivast, es a hivo fej neve szerinti kilepesi kodot adja.
-  # A kod forrasa: $FTmp/kilepokod/<fej> (hianyzo fajl -> 0, sikeres kiosztas).
+  # A kiosztas-mock: naplozza a hivast, es kilepesi kodot ad. A kod forrasa elsobbseggel:
+  # $FTmp/kilepokod/<fej>-<kartya> (kartyankent eltero eredmenyhez), majd $FTmp/kilepokod/<fej>
+  # (a regi, fejenkenti minta), hianyzo fajl -> 0, sikeres kiosztas.
   cat > "$FTmp/root/scripts/kartya-kiosztas.sh" <<'MOCKEOF'
 #!/usr/bin/env bash
 echo "KIOSZTAS: $1 $2" >> "$MOCK_DIR/hivasok"
 FKod=0
-[ -f "$MOCK_DIR/kilepokod/$2" ] && FKod=$(cat "$MOCK_DIR/kilepokod/$2")
+if [ -f "$MOCK_DIR/kilepokod/$2-$1" ]; then
+  FKod=$(cat "$MOCK_DIR/kilepokod/$2-$1")
+elif [ -f "$MOCK_DIR/kilepokod/$2" ]; then
+  FKod=$(cat "$MOCK_DIR/kilepokod/$2")
+fi
 if [ "$FKod" != "0" ]; then
   echo "MEGALLT" >&2
 fi
@@ -89,9 +94,9 @@ MOCKEOF
 }
 
 seed_card() {
-  local id="$1" status="$2" assignee="$3"
+  local id="$1" status="$2" assignee="$3" priority="${4:-normal}" created_at="${5:-0}"
   sqlite3 "$FTmp/root/store/claudeclaw.db" \
-    "insert into kanban_cards (id,title,status,assignee,created_at,updated_at) values ('$id','Teszt','$status','$assignee',0,0);"
+    "insert into kanban_cards (id,title,status,assignee,priority,created_at,updated_at) values ('$id','Teszt','$status','$assignee','$priority',$created_at,0);"
 }
 
 # hu: a futo fejek listaja -- delphi ABECEBEN design es ereceipt ELOTT all, ahogy elesben is.
@@ -147,14 +152,44 @@ check "T2 design kiosztva"    "1" "$(hivas_szam 'KIOSZTAS: K-design design')"
 check "T2 ereceipt kiosztva"  "1" "$(hivas_szam 'KIOSZTAS: K-ereceipt ereceipt')"
 check "T2 kilepesi kod 0"     "0" "$rc"
 
+echo "── T4: delphi elso kartyaja MEGALLT, a masodik MEHET -> a masodikat kiosztja ──"
+# Elo eset (2026-08-23 20:44): delphi ket urgent kartyaja is elegtelen meressel volt felirva --
+# a `limit 1` csak az elsot probalta, es MEGALLT-nal leallt DELPHIRE nezve, holott a masodik
+# menne. A javitasnak MINDEGYIK planned kartyat probalnia kell, amig egy sikerul.
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-1 planned delphi urgent 0
+seed_card K-delphi-2 planned delphi urgent 1
+seed_card K-design   planned design
+echo "1" > "$FTmp/kilepokod/delphi-K-delphi-1"
+rc=$(run_script)
+check "T4 az elso delphi-kartya megprobalva"  "1" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+check "T4 a masodik delphi-kartya IS probalva" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-2 delphi')"
+check "T4 design zavartalanul kiosztva"        "1" "$(hivas_szam 'KIOSZTAS: K-design design')"
+check "T4 kilepesi kod 0"                      "0" "$rc"
+
+echo "── T5: delphi MINDKET kartyaja MEGALLT -> vegleges leallas, de a ciklus folytatodik ─"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-1 planned delphi urgent 0
+seed_card K-delphi-2 planned delphi urgent 1
+seed_card K-design   planned design
+echo "1" > "$FTmp/kilepokod/delphi-K-delphi-1"
+echo "1" > "$FTmp/kilepokod/delphi-K-delphi-2"
+rc=$(run_script)
+check "T5 mindket delphi-kartya probalva (1.)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+check "T5 mindket delphi-kartya probalva (2.)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-2 delphi')"
+check "T5 design meg ekkor is kiosztva"        "1" "$(hivas_szam 'KIOSZTAS: K-design design')"
+check "T5 kilepesi kod 0"                      "0" "$rc"
+
 echo "── T3 (MUTACIO): a vedelem kivetele -> a T1 BUKJON vissza ─────────────────────"
 CMutans="$FTmp/fej-idle-dispatch-mutans.sh"
 python3 - "$CScript" "$CMutans" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
-old = '    if ! ki=$(bash scripts/kartya-kiosztas.sh "$card" "$fej" 2>&1); then'
-new = '    bash scripts/kartya-kiosztas.sh "$card" "$fej"; if false; then'
+old = '    if ki=$(bash scripts/kartya-kiosztas.sh "$card" "$fej" 2>&1); then'
+new = '    bash scripts/kartya-kiosztas.sh "$card" "$fej"; if true; then'
 if old in text:
     open(dst, 'w').write(text.replace(old, new, 1))
 PYEOF
@@ -170,6 +205,31 @@ else
   echo "1" > "$FTmp/kilepokod/delphi"
   rc=$(run_script)
   check "T3 mutansnal design MAR NEM erhetu el (a T1 visszajon)" "0" "$(hivas_szam 'KIOSZTAS: K-design design')"
+fi
+
+echo "── T6 (MUTACIO): a 'limit 1' visszavetele -> a T4 BUKJON vissza ───────────────"
+CMutans2="$FTmp/fej-idle-dispatch-mutans2.sh"
+python3 - "$CScript" "$CMutans2" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+old = "created_at asc;\")"
+new = "created_at asc limit 1;\")"
+if old in text:
+    open(dst, 'w').write(text.replace(old, new, 1))
+PYEOF
+if [ ! -s "$CMutans2" ] || cmp -s "$CScript" "$CMutans2" 2>/dev/null; then
+  echo "  ⚠️  T6 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+  seed_card K-delphi-1 planned delphi urgent 0
+  seed_card K-delphi-2 planned delphi urgent 1
+  cp "$CMutans2" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  echo "1" > "$FTmp/kilepokod/delphi-K-delphi-1"
+  rc=$(run_script)
+  check "T6 mutansnal a masodik kartya MAR NEM probalt (a T4 visszajon)" "0" "$(hivas_szam 'KIOSZTAS: K-delphi-2 delphi')"
 fi
 
 echo
