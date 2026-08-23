@@ -242,6 +242,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
+    // A hiányzó project mező volt a 226-kártyás lyuk forrása (#352) -- kötelező,
+    // hogy a hiány létrehozáskor derüljön ki, ne egy évekkel későbbi auditon.
+    if (typeof data.project !== 'string' || !data.project.trim()) {
+      json(res, { error: 'A "project" mező kötelező' }, 400)
+      return true
+    }
     const id = typeof data.id === 'string' && data.id.trim() ? data.id : randomUUID().slice(0, 8)
     createKanbanCard({ ...data, id })
     json(res, { ok: true, id })

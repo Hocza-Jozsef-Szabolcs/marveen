@@ -4382,6 +4382,7 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
                 assignee: 'marveen',
                 priority: 'normal',
                 status: 'planned',
+                project: 'Marveen',
               }),
             })
             created++

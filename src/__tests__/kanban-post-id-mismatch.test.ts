@@ -43,14 +43,14 @@ beforeEach(() => { initDatabase(':memory:') })
 
 describe('POST /api/kanban -- response id must match the stored id', () => {
   it('echoes the caller-supplied id when the body carries one', async () => {
-    const { json } = await postCard({ id: 'test-echo-delete-me', title: 'Echo test' })
+    const { json } = await postCard({ id: 'test-echo-delete-me', title: 'Echo test', project: 'FLOTTA' })
     expect(json.id).toBe('test-echo-delete-me')
     expect(getKanbanCard('test-echo-delete-me')).toBeTruthy()
     expect(getKanbanCard(json.id)).toBeTruthy()
   })
 
   it('generates and echoes a random id when the body carries none', async () => {
-    const { json } = await postCard({ title: 'No id supplied' })
+    const { json } = await postCard({ title: 'No id supplied', project: 'FLOTTA' })
     expect(json.id).toBeTruthy()
     expect(getKanbanCard(json.id)).toBeTruthy()
     expect(getKanbanCard(json.id)!.title).toBe('No id supplied')
