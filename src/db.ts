@@ -1986,6 +1986,22 @@ export function getLabelsForAllCards(): Map<string, Label[]> {
   return map
 }
 
+// Bulk variant for the board list view -- one query for the most recent
+// comment author per card (N+1 elkerülve), a getLabelsForAllCards() mintáját
+// követve. Csak azokra a card_id-kra van bejegyzés, amiknek van legalább egy
+// kommentje; "legutóbbi" a legnagyobb `id` szerint dől el (nem a created_at
+// szerint, mert a created_at egész-másodperc granularitású -- két komment
+// ugyanabban a másodpercben `id`-vel marad sorba rendezhető).
+export function getLastCommentAuthorsForAllCards(): Map<string, string> {
+  const rows = db.prepare(`
+    SELECT card_id, author FROM kanban_comments c1
+    WHERE id = (SELECT MAX(id) FROM kanban_comments c2 WHERE c2.card_id = c1.card_id)
+  `).all() as Array<{ card_id: string; author: string }>
+  const map = new Map<string, string>()
+  for (const row of rows) map.set(row.card_id, row.author)
+  return map
+}
+
 // --- Heartbeat helpers ---
 
 export interface HeartbeatKanbanSummary {

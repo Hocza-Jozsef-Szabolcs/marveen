@@ -820,6 +820,11 @@ let kanbanProjectFilter = ''
 // Matched case-insensitively against card.assignee so a casing mismatch
 // (e.g. card "gorcsevivan" vs list "GorcsevIvan") still filters correctly.
 let kanbanAssigneeFilter = ''
+// "Fuggosegek" quick-toggle: when true, only owner-assigned waiting/in_progress
+// cards whose last comment was written by someone else are shown (see
+// cardIsPendingOnOwner). Independent of kanbanAssigneeFilter -- AND-combined
+// with the other filter dimensions in renderKanban().
+let kanbanPendingFilterActive = false
 // Swimlane grouping: 'none' (flat board, default) | 'assignee' | 'priority'.
 // The initial value is pulled from window._marveen.kanbanSwimlanes.defaultGroup
 // the first time loadKanban() runs (see kanbanGroupByInitialized below), then
@@ -978,6 +983,23 @@ function ownerAssigneeName() {
   return owner ? owner.name : null
 }
 
+// A card is "pending on the owner" when it sits assigned to the owner AND the
+// last comment on it was NOT written by the owner -- i.e. someone else left
+// something for the owner to react to. Mirrors nalam-all.sh's SQL (last
+// comment author != assignee), but extended to in_progress as well as
+// waiting: a report/question left on an in_progress card is just as easy to
+// miss as one on a waiting card. `last_comment_author` comes from GET
+// /api/kanban (null when the card has no comments yet -- never "pending" then,
+// there is nothing to react to).
+function cardIsPendingOnOwner(card, ownerName) {
+  if (!ownerName) return false
+  if (card.status !== 'waiting' && card.status !== 'in_progress') return false
+  if (String(card.assignee || '').toLowerCase() !== ownerName.toLowerCase()) return false
+  const lastAuthor = card.last_comment_author
+  if (!lastAuthor) return false
+  return String(lastAuthor).toLowerCase() !== ownerName.toLowerCase()
+}
+
 // Reflect the active state of the owner quick-toggle button (hidden when there
 // is no owner-type assignee).
 function syncOwnerFilterBtn() {
@@ -990,6 +1012,19 @@ function syncOwnerFilterBtn() {
   btn.style.background = on ? 'var(--accent)' : 'var(--bg)'
   btn.style.color = on ? '#081a2d' : 'var(--fg)'
   btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+}
+
+// Reflect the active state of the "Fuggosegek" quick-toggle (hidden when there
+// is no owner-type assignee, same gating as the owner button).
+function syncPendingFilterBtn() {
+  const btn = document.getElementById('kanbanPendingBtn')
+  if (!btn) return
+  const owner = ownerAssigneeName()
+  if (!owner) { btn.style.display = 'none'; return }
+  btn.style.display = ''
+  btn.style.background = kanbanPendingFilterActive ? 'var(--accent)' : 'var(--bg)'
+  btn.style.color = kanbanPendingFilterActive ? '#081a2d' : 'var(--fg)'
+  btn.setAttribute('aria-pressed', kanbanPendingFilterActive ? 'true' : 'false')
 }
 
 // Inject the assignee filter (per-assignee dropdown + an owner "Rám vár" quick
@@ -1033,9 +1068,22 @@ function setupAssigneeFilter() {
       renderKanban()
     })
 
+    const pendingBtn = document.createElement('button')
+    pendingBtn.id = 'kanbanPendingBtn'
+    pendingBtn.type = 'button'
+    pendingBtn.textContent = t('kanban.filter.pending_btn')
+    pendingBtn.title = t('kanban.pending_filter')
+    pendingBtn.style.cssText = 'font-size:13px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);cursor:pointer;'
+    pendingBtn.addEventListener('click', () => {
+      kanbanPendingFilterActive = !kanbanPendingFilterActive
+      syncPendingFilterBtn()
+      renderKanban()
+    })
+
     toolbar.appendChild(label)
     toolbar.appendChild(sel)
     toolbar.appendChild(ownerBtn)
+    toolbar.appendChild(pendingBtn)
   }
 
   // (Re)populate options from the current assignee list, preserving selection.
@@ -1050,9 +1098,10 @@ function setupAssigneeFilter() {
     if (a.name === prev) opt.selected = true
     sel.appendChild(opt)
   }
-  // syncOwnerFilterBtn shows/hides the owner quick-button based on whether an
-  // owner-type assignee exists in the freshly loaded list.
+  // syncOwnerFilterBtn/syncPendingFilterBtn show/hide their quick-buttons based
+  // on whether an owner-type assignee exists in the freshly loaded list.
   syncOwnerFilterBtn()
+  syncPendingFilterBtn()
 }
 
 // Project + assignee + label filters, independent of the priority quick-filter
@@ -1074,6 +1123,13 @@ function kanbanCardMatchesLabelFilter(card) {
   if (kanbanLabelFilter.size === 0) return true
   const cardLabelIds = (card.labels || []).map((l) => l.id)
   return cardLabelIds.some((id) => kanbanLabelFilter.has(id))
+}
+
+// "Fuggosegek" filter dimension: no-op unless the toggle is active, then
+// delegates to cardIsPendingOnOwner against the current owner.
+function kanbanCardMatchesPendingFilter(card) {
+  if (!kanbanPendingFilterActive) return true
+  return cardIsPendingOnOwner(card, ownerAssigneeName())
 }
 
 // Shared by both the header quick-filter chips and the per-card footer label
@@ -1135,6 +1191,7 @@ function renderKanban() {
   for (const card of kanbanCards) {
     if (!kanbanCardMatchesBaseFilters(card)) continue
     if (!kanbanCardMatchesLabelFilter(card)) continue
+    if (!kanbanCardMatchesPendingFilter(card)) continue
     visibleCardIds.add(card.id)
   }
 
