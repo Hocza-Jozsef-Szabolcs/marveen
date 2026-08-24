@@ -9,8 +9,10 @@ import {
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
+  getLastCommentAuthorsForAllCards,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
+  getHeartbeatKanbanSummary,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -110,8 +112,44 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    // A "Fuggosegek" dashboard-szuro (in_progress/waiting kartyak, amiken az
+    // utolso komment szerzoje nem az owner) forras-mezoje -- nulla, ha a
+    // kartyanak meg nincs kommentje.
+    const lastCommentAuthorByCard = getLastCommentAuthorsForAllCards()
+    const cards = listKanbanCards().map((card) => ({
+      ...card,
+      labels: labelsByCard.get(card.id) ?? [],
+      last_comment_author: lastCommentAuthorByCard.get(card.id) ?? null,
+    }))
     jsonMaybeGzip(req, res, cards)
+    return true
+  }
+
+  // The heartbeat agent's kanban source. It exists so the agent does not have to
+  // COMPOSE the filter every hour: on 2026-08-04 the 09:00 report listed five
+  // items of which three were already `done`, even though its instructions had
+  // said to exclude them since #680. A rule the model must re-apply each hour is
+  // not a mechanism; an endpoint that cannot return a closed card is. It also
+  // removes the sqlite3 CLI from that path, which does not exist on a stock
+  // Linux install (#870).
+  if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
+    const summary = getHeartbeatKanbanSummary()
+    const slim = (c: { id: string; title: string; status: string; priority: string; assignee?: string | null }) => ({
+      id: c.id, title: c.title, status: c.status, priority: c.priority, assignee: c.assignee ?? null,
+    })
+    json(res, {
+      urgent: summary.urgent.map(slim),
+      waiting: summary.waiting.map(slim),
+      staleBlockers: summary.staleBlockers.map((r) => ({
+        id: r.id, title: r.title, referencedSeq: r.referencedSeq,
+      })),
+      counts: {
+        urgent: summary.urgent.length,
+        in_progress: summary.in_progress.length,
+        waiting: summary.waiting.length,
+        staleBlockers: summary.staleBlockers.length,
+      },
+    })
     return true
   }
 
@@ -217,8 +255,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
-    const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...data })
+    // A hiányzó project mező volt a 226-kártyás lyuk forrása (#352) -- kötelező,
+    // hogy a hiány létrehozáskor derüljön ki, ne egy évekkel későbbi auditon.
+    if (typeof data.project !== 'string' || !data.project.trim()) {
+      json(res, { error: 'A "project" mező kötelező' }, 400)
+      return true
+    }
+    const id = typeof data.id === 'string' && data.id.trim() ? data.id : randomUUID().slice(0, 8)
+    createKanbanCard({ ...data, id })
     json(res, { ok: true, id })
     return true
   }
@@ -227,8 +271,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
+    const { actor, ...fields } = JSON.parse(body.toString())
+    if (fields.status === 'done' && getKanbanCard(id) && getKanbanComments(id).length === 0) {
+      json(res, { error: 'A "done" státuszhoz lezáró komment szükséges' }, 400)
+      return true
+    }
+    if (updateKanbanCard(id, fields, actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -246,6 +294,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor } = JSON.parse(body.toString())
+    if (status === 'done' && getKanbanCard(id) && getKanbanComments(id).length === 0) {
+      json(res, { error: 'A "done" státuszhoz lezáró komment szükséges' }, 400)
+      return true
+    }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor)) {
       // Wake the assigned agent once when the card enters in_progress.
       if (status === 'in_progress') fireKanbanDispatch(id)
@@ -299,6 +351,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
+    // kanban_comments.card_id has no FOREIGN KEY, so an insert against a
+    // nonexistent card previously succeeded silently (200, comment invisible
+    // on every card -- proven incident: a `#<seq>` display reference posted
+    // as if it were the real id-slug, card 666844f2). Existence check first.
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.

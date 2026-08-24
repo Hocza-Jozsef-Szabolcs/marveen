@@ -13,7 +13,22 @@
 // (a zero-import module) so the registry default and the boot-time constant in
 // config.ts cannot drift apart -- bumping the distribution default is a
 // one-line change in exactly one place.
-export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-4-8[1m]'
+// MAINMODEL806 (Szabi: "everything on Opus 5"): the default for the OTHER
+// agents and the background-worker sessions -- AND, via resolve_main_model's
+// fallback (channels.sh), the effective default for the MAIN agent on any
+// install whose settings.json has no model. So this value is INHERITED by NEW
+// agents and by existing model-less installs; it is not a mere worker knob.
+// The [1m] suffix is DELIBERATE, and the real reason is that inheritance, not
+// continuity: a new agent is as long-lived as the current fleet (all of whom
+// run explicit [1m]), and a narrower window would reproduce the context-guard
+// restarts we measured. (The prior worker default happening to be [1m] only
+// proves precedent, not need -- do not read it as "it was always this".) It
+// matches the main agent's template value, so the two do not quietly diverge.
+// resolveModelId passes the [1m] id through unchanged (measured), exactly as
+// the CLI already handles the 4.8[1m] default. The valueSet below carries BOTH
+// claude-opus-5 and claude-opus-5[1m] so an operator can still pick the
+// non-1M form.
+export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5[1m]'
 
 export type SettingType = 'int' | 'string' | 'color' | 'boolean'
 
@@ -402,6 +417,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   },
   // --- System module ---
   {
+    key: 'TELEGRAM_REPLY_TO_RESOLUTION_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Ha egy Telegram-üzenet a válasz gombbal érkezik (reply_to_message_id), a telegram-reply-directive.py hook automatikusan feloldja, melyik saját {N} sorszámú üzenetre válaszolt a küldő, és beleírja a direktívába. Alapértelmezetten KIKAPCSOLVA (opt-in) -- nem minden telepítésnek van szüksége rá. Bekapcsolva a mögötte álló adat megbízhatósága a Telegram plugin telepített forrásán múlik. A direktíva alap-szövege (reply tool kényszerítése) a kapcsolótól függetlenül mindig megy. Azonnal érvényes, nincs hozzá újraindítás -- a hook minden bejövő üzenetnél újra elindul.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'SCHEDULER_TZ',
     type: 'string',
     default: '',
@@ -421,6 +445,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     valueSet: [
       'claude-opus-5',
+      'claude-opus-5[1m]',
       'claude-sonnet-5',
       'claude-fable-5',
       'claude-opus-4-8[1m]',
