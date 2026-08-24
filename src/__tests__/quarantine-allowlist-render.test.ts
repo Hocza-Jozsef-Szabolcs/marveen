@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { renderQuarantineReader, ownerAllowedDomains, isPublicFetchHost } from '../web/agent-scaffold.js'
+import {
+  renderQuarantineReader,
+  ownerAllowedDomains,
+  quarantineOnlyDomains,
+  isPublicFetchHost,
+  ensureQuarantineReader,
+} from '../web/agent-scaffold.js'
 
 // The quarantine reader may only fetch from an allowlist, and that list used to
 // exist TWICE: once in this template and once in store/egress-allowlist.json,
@@ -107,6 +113,36 @@ describe('ownerAllowedDomains', () => {
   })
 })
 
+// quarantine_domains is a SECOND field in the same file, read only by the
+// egress-gate hook until now -- ownerAllowedDomains() (above) never touched
+// it, so a domain approved here never reached the reader's own prompt. Same
+// shape and filtering as ownerAllowedDomains; kept as a separate reader
+// because the two fields answer different questions (domains opens the main
+// agent's own WebFetch, quarantine_domains opens only the quarantine-reader).
+describe('quarantineOnlyDomains', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'egress-quarantine-'))
+
+  it('reads quarantine_domains, not domains', () => {
+    writeFileSync(join(dir, 'egress-allowlist.json'), JSON.stringify({
+      domains: ['a.com'],
+      quarantine_domains: ['q.com'],
+    }))
+    expect(quarantineOnlyDomains(dir)).toEqual(['q.com'])
+  })
+
+  it('a file without the key is not an error', () => {
+    writeFileSync(join(dir, 'egress-allowlist.json'), JSON.stringify({ domains: ['a.com'] }))
+    expect(quarantineOnlyDomains(dir)).toEqual([])
+  })
+
+  it('drops non-strings and blanks the same way ownerAllowedDomains does', () => {
+    writeFileSync(join(dir, 'egress-allowlist.json'), JSON.stringify({
+      quarantine_domains: [' q.com ', '', 42, null, 'r.com'],
+    }))
+    expect(quarantineOnlyDomains(dir)).toEqual(['q.com', 'r.com'])
+  })
+})
+
 // The egress gate and the reader are edited with different threat models: the
 // gate answers "may the main agent call this host" (a LAN box is ordinary), the
 // reader answers "may a fetch target be steered here". Inheriting the first into
@@ -169,5 +205,51 @@ describe('renderQuarantineReader anchoring', () => {
     ].join('\n')
     const out = renderQuarantineReader(tpl, ['claude.com'])
     expect(out.indexOf('- `claude.com`')).toBeLessThan(out.indexOf('## Output format'))
+  })
+})
+
+// #795d7f92: domains and quarantine_domains fed two different consumers (the
+// hook read quarantine_domains, the render only read domains), so an operator
+// approval landed in the JSON but never reached the deployed instance -- the
+// hook would have allowed the fetch, the sub-agent's own prompt refused it
+// first. ensureQuarantineReader is the actual write path (agent-scaffold.ts,
+// called from both scaffoldAgentDir and the server-startup loop in web.ts),
+// so these drive it directly rather than re-deriving its behavior by hand.
+describe('ensureQuarantineReader propagates quarantine_domains', () => {
+  it('a domain that exists ONLY in quarantine_domains appears in the rendered instance', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'egress-store-'))
+    const destDir = mkdtempSync(join(tmpdir(), 'egress-dest-'))
+    writeFileSync(join(storeDir, 'egress-allowlist.json'), JSON.stringify({
+      domains: ['a.com'],
+      quarantine_domains: ['only-quarantine.example.com'],
+    }))
+    ensureQuarantineReader('test-agent', { storeDir, destDirOverride: destDir })
+    const out = readFileSync(join(destDir, 'quarantine-reader.md'), 'utf-8')
+    expect(out).toContain('- `only-quarantine.example.com`')
+    expect(out).toContain('- `a.com`')
+  })
+
+  it('re-render updates an ALREADY deployed instance once quarantine_domains gains an entry', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'egress-store2-'))
+    const destDir = mkdtempSync(join(tmpdir(), 'egress-dest2-'))
+    writeFileSync(join(storeDir, 'egress-allowlist.json'), JSON.stringify({
+      domains: ['a.com'],
+      quarantine_domains: [],
+    }))
+    ensureQuarantineReader('test-agent', { storeDir, destDirOverride: destDir })
+    const before = readFileSync(join(destDir, 'quarantine-reader.md'), 'utf-8')
+    expect(before).not.toContain('later-approved.example.com')
+
+    // The operator approves a new quarantine-only domain in the JSON -- no
+    // agent re-creation. The SAME deployed instance file must pick it up on
+    // the next ensureQuarantineReader call (e.g. the next server start).
+    writeFileSync(join(storeDir, 'egress-allowlist.json'), JSON.stringify({
+      domains: ['a.com'],
+      quarantine_domains: ['later-approved.example.com'],
+    }))
+    const wrote = ensureQuarantineReader('test-agent', { storeDir, destDirOverride: destDir })
+    expect(wrote).toBe(true)
+    const after = readFileSync(join(destDir, 'quarantine-reader.md'), 'utf-8')
+    expect(after).toContain('- `later-approved.example.com`')
   })
 })

@@ -591,6 +591,28 @@ export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
   }
 }
 
+// The OTHER field in the same file: `quarantine_domains`. scripts/hooks/egress-gate.mjs
+// reads this one to open its quarantine tier (reachable only by the
+// quarantine-reader sub-agent, never the main agent). Until now nothing read
+// it on the render side, so an operator approval landed in the JSON and never
+// reached the deployed instance's own prompt: the hook would have allowed the
+// fetch, the sub-agent refused it first (#795d7f92). Kept as a separate
+// reader, not merged into ownerAllowedDomains -- the two fields keep opening
+// different things; they are only combined at the renderQuarantineReader call
+// site below, because that deployed file is always the quarantine-reader's
+// own definition and may draw on both.
+export function quarantineOnlyDomains(storeDir = STORE_DIR): string[] {
+  try {
+    const raw = JSON.parse(readFileSync(join(storeDir, 'egress-allowlist.json'), 'utf-8'))
+    const list = Array.isArray(raw?.quarantine_domains) ? raw.quarantine_domains : []
+    return list.filter((d: unknown): d is string => typeof d === 'string')
+      .map((d: string) => d.trim())
+      .filter((d: string) => isPublicFetchHost(d))
+  } catch {
+    return []
+  }
+}
+
 // Render the reader definition: the template's shipped feeds, plus the domains
 // the owner allowed on this install. Pure, so the tests drive the same string
 // the deploy writes.
@@ -678,21 +700,36 @@ export function ensureGovernanceGateCommands(name: string): boolean {
 // reverted at the next boot -- which is how an owner-approved domain
 // disappeared on 2026-07-30. Now the owner's domains are an INPUT to the
 // render, so a re-render preserves the decision instead of erasing it.
+//
+// `opts` overrides exist for tests only (production call sites pass none):
+// storeDir substitutes for STORE_DIR, destDirOverride substitutes for the
+// computed agent/homedir path, tplPath substitutes for the tracked template.
 // Returns true if the file was written, false if already up-to-date.
-export function ensureQuarantineReader(name: string): boolean {
-  const tplPath = join(PROJECT_ROOT, 'templates', 'sub-agents', 'quarantine-reader.md')
+export function ensureQuarantineReader(
+  name: string,
+  opts: { storeDir?: string; destDirOverride?: string; tplPath?: string } = {},
+): boolean {
+  const tplPath = opts.tplPath ?? join(PROJECT_ROOT, 'templates', 'sub-agents', 'quarantine-reader.md')
   if (!existsSync(tplPath)) return false
   let destDir: string
-  if (name === MAIN_AGENT_ID) {
+  if (opts.destDirOverride) {
+    destDir = opts.destDirOverride
+  } else if (name === MAIN_AGENT_ID) {
     destDir = join(homedir(), '.claude', 'agents')
   } else {
     destDir = join(agentDir(name), '.claude', 'agents')
   }
   mkdirSync(destDir, { recursive: true })
   const destPath = join(destDir, 'quarantine-reader.md')
+  const storeDir = opts.storeDir ?? STORE_DIR
   let rendered: string
   try {
-    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), ownerAllowedDomains())
+    // Both fields feed this ONE deployed file: it is always the
+    // quarantine-reader's own definition, so a domain approved for either
+    // the main agent (domains) or only the quarantine tier
+    // (quarantine_domains) belongs in its prompt.
+    const domains = [...ownerAllowedDomains(storeDir), ...quarantineOnlyDomains(storeDir)]
+    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), domains)
   } catch {
     return false
   }
