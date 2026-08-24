@@ -141,14 +141,30 @@ if [ -n "$FZeroCommentRows" ]; then
 fi
 
 # ── 6. URGENT-KOR (BLOKKOLT KAPU + NYITOTT HATARIDOK) ────────────────────────────────────
+# A kor forrasa: mikor lepett a kartya a JELENLEGI statuszaba (kanban_card_events, a
+# kanban_cards_status_audit trigger irja -- lasd src/db.ts). Ha nincs ilyen esemeny (regi
+# kartya, a trigger elotti allapotvaltas), a kartya letrehozasi ideje (created_at) a
+# tartalek forras. EGYIK SEM az `updated_at`, mert azt MINDEN komment (addKanbanComment,
+# src/db.ts) feltetel nelkul felulirja -- az a mero pontosan azt nullazna, amit meg kell
+# talalnia (kartya 3988cdd1, bukas-eloallitassal igazolva: test-munka-motor-precheck.sh T6c/T6d).
 FUrgentMaxAgeSec=$(( FUrgentMaxAgeHours * 3600 ))
 FUrgentRows="$(sqlite3 -separator '|' "$FDb" \
-  "select id, status, coalesce(assignee,'-'), round((strftime('%s','now')-updated_at)/3600.0,1) \
-   from kanban_cards where archived_at is null and priority='urgent' and status in ('planned','waiting') \
-   and (strftime('%s','now')-updated_at) > ${FUrgentMaxAgeSec} \
-   order by updated_at asc;" 2>/dev/null)"
+  "WITH stall AS ( \
+     SELECT k.id, k.status, k.assignee, \
+            (SELECT MAX(e.created_at) FROM kanban_card_events e \
+             WHERE e.card_id = k.id AND e.to_status = k.status) AS ev_since, \
+            k.created_at AS fallback_since \
+     FROM kanban_cards k \
+     WHERE k.archived_at IS NULL AND k.priority='urgent' AND k.status IN ('planned','waiting') \
+   ) \
+   SELECT id, status, coalesce(assignee,'-'), \
+          round((strftime('%s','now') - coalesce(ev_since, fallback_since)) / 3600.0, 1), \
+          CASE WHEN ev_since IS NOT NULL THEN 'esemeny' ELSE 'letrehozas' END \
+   FROM stall \
+   WHERE (strftime('%s','now') - coalesce(ev_since, fallback_since)) > ${FUrgentMaxAgeSec} \
+   ORDER BY coalesce(ev_since, fallback_since) ASC;" 2>/dev/null)"
 if [ -n "$FUrgentRows" ]; then
-  FRep="$(printf '%s\n' "$FUrgentRows" | awk -F'|' '{printf "  %s (%s, %s, %s ora)\n", $1, $2, $3, $4}')"
+  FRep="$(printf '%s\n' "$FUrgentRows" | awk -F'|' '{printf "  %s (%s, %s, %s ora, forras: %s)\n", $1, $2, $3, $4, $5}')"
   FFindings+=("URGENT-KOR (kuszob >${FUrgentMaxAgeHours} ora): urgent kartya, ami nem mozdult:"$'\n'"$FRep")
 fi
 
