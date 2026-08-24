@@ -115,16 +115,22 @@ OUT="$(run_env)"
 check "T3b SKIP friss pendinggel" "SKIP" "$OUT"
 sqlite3 "$FDb" "DELETE FROM agent_messages;"
 
-echo "── T4: keskeny pane -- talal ───────────────────────────────────────────────────────────"
-tmux new-session -d -s agent-zzzprecheck -x 40 -y 20
+echo "── T4: pane-tartalom NEM illeszkedik IDLE_FOOTER_RX-re (bukas-eloallitas) -- talal ────"
+# A footer helyett egy UI-hint all a pane-en (a card-ot okozo tenyleges eset: rendezo,
+# 2026-08-11, "new task? /clear to save 304.4k tokens"). Sem footer, sem busy-jelzes --
+# detectPaneState 'unknown'-t ad, tehat a fej kezbesithetetlen.
+tmux new-session -d -s agent-zzzprecheck -x 80 -y 20
+tmux send-keys -l -t agent-zzzprecheck "new task? /clear to save 304.4k tokens"
 OUT="$(run_env env MMPC_TMUX_SESSION_PREFIX="agent-zzzprecheck")"
-check "T4 pane-szelesseg finding" "1" "$(echo "$OUT" | grep -qi 'PANE-SZELESSEG' && echo 1 || echo 0)"
+check "T4 pane-kezbesithetetlen finding" "1" "$(echo "$OUT" | grep -qi 'PANE-KEZBESITHETETLEN' && echo 1 || echo 0)"
+check "T4 emliti a session nevet" "1" "$(echo "$OUT" | grep -q 'agent-zzzprecheck' && echo 1 || echo 0)"
 tmux kill-session -t agent-zzzprecheck 2>/dev/null
 
-echo "── T4b: szeles pane -- nem talal ───────────────────────────────────────────────────────"
+echo "── T4b: pane-tartalom illeszkedik IDLE_FOOTER_RX-re (pozitiv kontroll) -- nem talal ───"
 tmux new-session -d -s agent-zzzprecheck -x 80 -y 20
+tmux send-keys -l -t agent-zzzprecheck "bypass permissions on (shift+tab to cycle)"
 OUT="$(run_env env MMPC_TMUX_SESSION_PREFIX="agent-zzzprecheck")"
-check "T4b SKIP szeles pane-nel" "SKIP" "$OUT"
+check "T4b SKIP bizonyitottan kezbesitheto panenal" "SKIP" "$OUT"
 tmux kill-session -t agent-zzzprecheck 2>/dev/null
 
 echo "── T5: nulla-kommentes waiting kartya -- talal ─────────────────────────────────────────"

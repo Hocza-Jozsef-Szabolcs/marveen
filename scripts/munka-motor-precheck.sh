@@ -3,8 +3,9 @@
 #     dontese 2026-08-06 20:53. A schedule-runner `preCheck` mechanizmusan (runPreCheck,
 #     src/web/schedule-runner.ts) fut, MODELL NELKUL, minden ora 20. percen. Het mechanikus
 #     ellenorzest vegez, amit korabban a modellnek kellett minden korben ujramernie: CPU
-#     (top -l 2), mentes-frissesseg, pending sor, pane-szelesseg, kvota-fagyasztas-kapcsolo,
-#     nulla-komment mero, urgent-kor.
+#     (top -l 2), mentes-frissesseg, pending sor, pane-kezbesithetetlenseg (a router valos
+#     IDLE_FOOTER_RX-alapu detectPaneState feltetele, nem szelesseg-proxy), kvota-fagyasztas-
+#     kapcsolo, nulla-komment mero, urgent-kor.
 #
 #     KIMENETI PROTOKOLL (runPreCheck szerzodese):
 #       - "SKIP" (egyetlen sor)  -> a modell EBRED NEM meg, a kor nemán zarul
@@ -39,7 +40,7 @@ FDb="${MMPC_DB:-$MHome/store/claudeclaw.db}"
 FBackupsGlob="${MMPC_BACKUPS_GLOB:-$MHome/backups/*.tar.gz}"
 FBackupMaxAgeMin="${MMPC_BACKUP_MAX_AGE_MIN:-1560}"
 FPendingMaxAgeMin="${MMPC_PENDING_MAX_AGE_MIN:-10}"
-FPaneMinWidth="${MMPC_PANE_MIN_WIDTH:-60}"
+FPaneStateJs="${MMPC_PANE_STATE_JS:-$MHome/dist/pane-state.js}"
 FUrgentMaxAgeHours="${MMPC_URGENT_MAX_AGE_HOURS:-2}"
 FCpuThreshold="${MMPC_CPU_THRESHOLD:-300}"
 FTmuxPrefix="${MMPC_TMUX_SESSION_PREFIX:-agent-}"
@@ -97,16 +98,35 @@ if [ -n "$FPendingFinding" ]; then
   FFindings+=("PENDING-SOR (kuszob >=${FPendingMaxAgeMin} perc):"$'\n'"$FPendingFinding")
 fi
 
-# ── 4. PANE-SZELESSEG (a fo/aktiv pane, NEM a legkeskenyebb -- lasd a munka-motor promptot) ──
+# ── 4. PANE-KEZBESITHETETLEN (a fo/aktiv pane -- a TENYLEGES feltetellel, nem proxyval) ──
+# Korabban ez a blokk a pane-szelesseget merte proxykent (kuszob alatt = "keskeny = gyanus").
+# Bizonyitott hiba (kartya router-keszbesites-footer-regexen-mulik-20260811): egy 80 oszlopos
+# (nem keskeny) panen a footer helyett egy UI-hint allt, a router ezert NEM kezbesitett HET
+# uzenetet 1 ora 20 percig -- es a szelesseg-proxy ZOLDET adott, mert a pane nem volt keskeny.
+# A router a src/pane-state.ts IDLE_FOOTER_RX-e altal felismert footer alapjan dont
+# kezbesithetosegrol (detectPaneState). Ez a blokk UGYANAZT a fuggvenyt futtatja MINDEN
+# agent- pane tartalman -- nem egy kulon regexet ir ujra bash-ben (az pont az a fajta
+# masodpeldany-drift, ami a router oldalan mar egyszer okozott nema kezbesitesi lyukat).
+# 'unknown' = sem footer, sem busy-jelzes nincs a panen -> a fej nem kap injektalt promptot.
 FPaneFinding=""
-for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep "^${FTmuxPrefix}"); do
-  w=$(tmux list-panes -t "$s" -F '#{pane_active} #{pane_width}' 2>/dev/null | awk '$1==1{print $2}')
-  if [ -n "$w" ] && [ "$w" -lt "$FPaneMinWidth" ]; then
-    FPaneFinding+="  ${s}: a fo pane csak ${w} oszlop (kuszob ${FPaneMinWidth})"$'\n'
-  fi
-done
+FPaneNode="$(command -v node || true)"
+if [ -n "$FPaneNode" ] && [ -f "$FPaneStateJs" ]; then
+  for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep "^${FTmuxPrefix}"); do
+    FCapture="$(tmux capture-pane -p -t "$s" 2>/dev/null)"
+    [ -z "$FCapture" ] && continue
+    FState="$(printf '%s' "$FCapture" | "$FPaneNode" -e '
+      const ps = require(process.argv[1])
+      let raw = ""
+      process.stdin.on("data", (d) => { raw += d })
+      process.stdin.on("end", () => { console.log(ps.detectPaneState(raw)) })
+    ' "$FPaneStateJs" 2>/dev/null)"
+    if [ "$FState" = "unknown" ]; then
+      FPaneFinding+="  ${s}: nincs felismert footer es busy-jelzes sem -- a fej kezbesithetetlen"$'\n'
+    fi
+  done
+fi
 if [ -n "$FPaneFinding" ]; then
-  FFindings+=("PANE-SZELESSEG:"$'\n'"$FPaneFinding")
+  FFindings+=("PANE-KEZBESITHETETLEN:"$'\n'"$FPaneFinding")
 fi
 
 # ── 5. NULLA-KOMMENT MERO (waiting kartya, amin meg senki nem irt semmit) ───────────────
