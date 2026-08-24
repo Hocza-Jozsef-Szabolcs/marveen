@@ -32,9 +32,25 @@ if [ -z "$idle" ]; then
 fi
 
 for fej in $idle; do
-  cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+  # A VHR-projektu kartyakat a dispatch NEM oszthatja ki onkezdemenyezetten -- nevesitett,
+  # vissza nem vont korlatozas (CLAUDE.md, "VHR-ugyben Zoli a cimzett, a flotta az
+  # e-penztargepen", 2026-08-15): a VHR-munkat Zoli kerese tartja mozgasban, nem automatikus
+  # heartbeat. Bizonyitottan megismetlodott HAROM egymast koveto heartbeat-korben (2026-08-24,
+  # delphi + pascal, mindannyiszor percekig futo munkat kellett visszavonni).
+  # A puszta project='VHR' NEM eleg: 226 kartyan URES a project mezo (kanban-project-mezo-226-
+  # kartyan-ures-20260808), ezert a cim/leiras VHR-emlitese IS kizaro ok.
+  # coalesce KOTELEZO: SQL harom-erteku logikaban a `project='VHR'` NULL project eseten NULL-t
+  # ad (nem FALSE-t), es a `not (NULL or ...)` is NULL marad -- a WHERE ekkor a sort KIHAGYJA,
+  # nem befogadja. Enelkul MINDEN ures project-u, nem-VHR kartya csendben eltunt volna a listabol.
+  vhr_feltetel="(coalesce(project,'')='VHR' or title like '%VHR%' or coalesce(description,'') like '%VHR%')"
+  cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null and not $vhr_feltetel order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
   if [ -z "$cards" ]; then
-    echo "TETLEN: $fej -- nincs sajat nevre allitott planned kartyaja"
+    vhr_count=$(sqlite3 "$DB" "select count(*) from kanban_cards where assignee='$fej' and status='planned' and archived_at is null and $vhr_feltetel;")
+    if [ "$vhr_count" != "0" ]; then
+      echo "TETLEN: $fej -- csak VHR-projektu planned kartyaja van, korlatozva (Zoli kerese kell)"
+    else
+      echo "TETLEN: $fej -- nincs sajat nevre allitott planned kartyaja"
+    fi
     continue
   fi
   kiosztva=0
