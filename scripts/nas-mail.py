@@ -38,12 +38,22 @@ CREDS_PATH = Path(os.environ.get("MARVEEN_NAS_MAIL_CREDS", ROOT / "store" / "nas
 DEFAULT_HOURS = 12
 CONNECT_TIMEOUT_S = 20
 
-# Headers worth fetching. The last three are the bulk-mail signals used by
+# Headers worth fetching. The last four are the bulk-mail signals used by
 # is_noise() -- fetching them costs nothing extra since it is one round trip.
-HEADER_FIELDS = "FROM SUBJECT DATE LIST-UNSUBSCRIBE AUTO-SUBMITTED PRECEDENCE"
+HEADER_FIELDS = "FROM SUBJECT DATE LIST-UNSUBSCRIBE AUTO-SUBMITTED PRECEDENCE RETURN-PATH"
 
 # Sender local-parts that never carry a message worth waking up for.
 NOISE_SENDERS = ("noreply", "no-reply", "donotreply", "do-not-reply", "newsletter", "mailer-daemon")
+
+# hu: A ceg sajat es a gazda sajat domainje -- innen jovo level SOHA nem zaj,
+#     meg akkor sem, ha egy heurisztika (pl. bounce-cimzes, List-Unsubscribe)
+#     tevesen annak jelolne. Ez az ALLOWLIST elsobbseget elvez MINDEN mas
+#     is_noise() jel elott.
+# en: The company's own domain and the owner's own domain -- mail from here
+#     is NEVER noise, even if a heuristic (bounce addressing,
+#     List-Unsubscribe) would misclassify it. This allowlist overrides every
+#     other is_noise() signal.
+BUSINESS_SENDER_DOMAINS = frozenset({"com-passz.hu", "fenysoft.hu"})
 
 # Subject keywords, matched accent-insensitively on WORD boundaries -- see
 # _fold(). Substring matching would flag "akcióterv" as a promotion.
@@ -155,12 +165,21 @@ def decode_header_value(raw) -> str:
     return re.sub(r"\s+", " ", "".join(parts)).strip()
 
 
+def _sender_domain(sender: str) -> str:
+    match = re.search(r"@([\w.-]+)", sender or "")
+    return match.group(1).lower() if match else ""
+
+
 def is_noise(sender: str, subject: str, headers: dict) -> bool:
     """True if the message is bulk mail the briefing should skip.
 
-    Header signals first (machine-readable, no guessing), then sender and
-    subject heuristics.
+    Business allowlist first (it overrides every other signal), then header
+    signals (machine-readable, no guessing), then sender and subject
+    heuristics.
     """
+    if _sender_domain(sender) in BUSINESS_SENDER_DOMAINS:
+        return False
+
     lookup = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
 
     if lookup.get("list-unsubscribe"):
@@ -174,12 +193,50 @@ def is_noise(sender: str, subject: str, headers: dict) -> bool:
     if lookup.get("precedence", "").strip().lower() in ("bulk", "junk", "list"):
         return True
 
+    # hu: VERP visszapattanasi cim ("bounce+..."/"...-bounces@...") -- a
+    #     tomeges-level-kuldo szoftverek (Mailman, Mailgun, PHPMailer-alapu
+    #     tomeglevelezok) sajat maguk jelolik meg igy a Return-Path-ot, hogy a
+    #     kezbesitetlen leveleket automatan tudjak feldolgozni. Elo mereskkel
+    #     igazolt jel (Pinterest ajanlo, SKIK korlevél, PHPMailer hirdetes),
+    #     amit sem a List-Unsubscribe, sem a targyszo-keszlet nem fogott meg.
+    # en: VERP bounce address ("bounce+..."/"...-bounces@...") -- bulk-mail
+    #     software (Mailman, Mailgun, PHPMailer-based blasters) tags its own
+    #     Return-Path this way to automate handling of undeliverable mail.
+    #     Measured on live noise (a Pinterest recommendation, an SKIK chamber
+    #     mailing, a PHPMailer ad) that neither List-Unsubscribe nor the
+    #     subject-keyword set caught.
+    if "bounce" in lookup.get("return-path", "").lower():
+        return True
+
     if any(word in (sender or "").lower() for word in NOISE_SENDERS):
         return True
 
     folded = _fold(subject or "")
 
     return any(re.search(rf"\b{re.escape(_fold(w))}\b", folded) for w in NOISE_SUBJECT_WORDS)
+
+
+def dedupe(entries: list) -> list:
+    """Keep only the first occurrence of each (sender, subject) pair.
+
+    Entries are expected newest-first (the order select_recent() produces),
+    so "first" means "newest". A duplicate is exact same sender + exact same
+    subject inside the window -- the FenySoft NAS inbox measurably receives
+    the identical chamber invite or bill-payment confirmation twice.
+    """
+    seen = set()
+    kept = []
+
+    for e in entries:
+        key = ((e.get("from") or "").strip().lower(), (e.get("subject") or "").strip().lower())
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        kept.append(e)
+
+    return kept
 
 
 def select_recent(entries: list, now: datetime, hours: int = DEFAULT_HOURS) -> list:
@@ -278,7 +335,7 @@ def fetch_inbox(hours: int, keep_all: bool) -> dict:
         except Exception:  # a dropped socket must not mask the real error
             pass
 
-    recent = select_recent(entries, now, hours)
+    recent = dedupe(select_recent(entries, now, hours))
 
     return {
         "mailbox": creds["user"],

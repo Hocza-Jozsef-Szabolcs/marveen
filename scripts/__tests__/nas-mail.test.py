@@ -162,6 +162,71 @@ class TestNoiseFilter(unittest.TestCase):
         # "akcióterv" is not a promotion; substring matching would flag it.
         self.assertFalse(nm.is_noise("a@b.hu", "Akcióterv a jövő hétre", {}))
 
+    def test_bounce_return_path_marks_bulk_mail(self):
+        # VERP bounce addressing (Mailman, Mailgun, ...) is a mailing-list
+        # signal as reliable as List-Unsubscribe -- measured on live noise
+        # that carried no other header (Pinterest recommendations, an SKIK
+        # chamber invite, a PHPMailer blast) all used a "bounce" Return-Path.
+        self.assertTrue(
+            nm.is_noise(
+                "Pinterest <recommendations@discover.pinterest.com>",
+                "Webdizájn",
+                {"Return-Path": "<bounce+48faad.56089b-x=y.com@discover.pinterest.com>"},
+            )
+        )
+        self.assertTrue(
+            nm.is_noise("SKIK INFO <info@skik.hu>", "Meghívó", {"Return-Path": "<skikll-bounces@web200.eu>"})
+        )
+
+    def test_return_path_matching_the_sender_is_not_noise(self):
+        # A Return-Path equal to the sender's own address is ordinary mail --
+        # only the "bounce" pattern is the signal, not any Return-Path at all.
+        self.assertFalse(nm.is_noise("a@b.hu", "Valasz", {"Return-Path": "<a@b.hu>"}))
+
+    def test_known_business_domain_is_never_noise(self):
+        # The allowlist overrides every other signal -- even a List-Unsubscribe
+        # header or a promo-worded subject must not hide a business sender.
+        self.assertFalse(
+            nm.is_noise(
+                "Info <info@fenysoft.hu>",
+                "AKCIÓ: -50% kedvezmény",
+                {"List-Unsubscribe": "<https://x/u>", "Return-Path": "<bounces@fenysoft.hu>"},
+            )
+        )
+        self.assertFalse(nm.is_noise("Hocza József <hj@com-passz.hu>", "Egyeztetés", {}))
+
+    def test_business_domain_match_is_case_insensitive(self):
+        self.assertFalse(nm.is_noise("Info <INFO@FENYSOFT.HU>", "Rendes level", {}))
+
+
+class TestDedupe(unittest.TestCase):
+    def test_drops_a_repeat_with_the_same_sender_and_subject(self):
+        entries = [
+            {"from": "SKIK INFO <info@skik.hu>", "subject": "Meghívó rendezvényeinkre"},
+            {"from": "SKIK INFO <info@skik.hu>", "subject": "Meghívó rendezvényeinkre"},
+        ]
+        self.assertEqual(len(nm.dedupe(entries)), 1)
+
+    def test_keeps_the_first_occurrence(self):
+        # select_recent() already sorts newest-first, so "first" is "newest".
+        newer = {"from": "a@b.hu", "subject": "x", "tag": "newer"}
+        older = {"from": "a@b.hu", "subject": "x", "tag": "older"}
+        self.assertEqual(nm.dedupe([newer, older]), [newer])
+
+    def test_same_sender_different_subject_is_not_a_duplicate(self):
+        entries = [
+            {"from": "Wise <noreply@wise.com>", "subject": "Utalás elküldve (#1)"},
+            {"from": "Wise <noreply@wise.com>", "subject": "Utalás elküldve (#2)"},
+        ]
+        self.assertEqual(len(nm.dedupe(entries)), 2)
+
+    def test_match_is_case_and_whitespace_insensitive(self):
+        entries = [
+            {"from": "a@b.hu", "subject": "Ajánlat"},
+            {"from": "A@B.HU", "subject": "  ajánlat  "},
+        ]
+        self.assertEqual(len(nm.dedupe(entries)), 1)
+
 
 class TestRecencyWindow(unittest.TestCase):
     def setUp(self):
