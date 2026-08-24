@@ -58,6 +58,7 @@ import {
   selectedSubmenuLine,
   chooseSubmenuTarget,
 } from '../web/channel-mcp-reconnect.js'
+import { logger } from '../logger.js'
 
 // Submenu panes Claude Code renders for each plugin state. The `❯` marks the
 // row the cursor sits on when the submenu first opens (top row).
@@ -305,6 +306,46 @@ describe('attemptChannelMcpReconnect', () => {
 
     expect(result.ok).toBe(false)
     expect(result.message).toContain('not found')
+  })
+
+  // Measured 2026-08-24 (card marveen-channel-gyakori-restart-20260824): 34 of
+  // ~42 logged "plugin down" episodes hit one of these three failure branches,
+  // but the warn() call carried only a fixed message -- no pane content -- so
+  // there was no way to tell WHY the menu walk got lost (stale render, unusual
+  // wording, an extra CC UI frame, ...). The next incident needs evidence, not
+  // another guess: every failure branch must log what the pane actually showed.
+  it('logs the last-seen pane content when the plugin submenu is not found (post-incident diagnosis)', () => {
+    mockCapturePane.mockReturnValueOnce('/mcp menu')
+    for (let i = 0; i < 8; i++) {
+      mockCapturePane.mockReturnValueOnce(`no match here, attempt ${i}`)
+    }
+
+    attemptChannelMcpReconnect('marveen')
+
+    const warnCall = vi.mocked(logger.warn).mock.calls.find(
+      (c) => typeof c[1] === 'string' && c[1].includes('plugin submenu not found'),
+    )
+    expect(warnCall).toBeDefined()
+    const fields = warnCall![0] as Record<string, unknown>
+    expect(fields.paneTail).toContain('attempt 7')
+  })
+
+  it('logs the last-seen submenu content when the cursor cannot be placed on the target option', () => {
+    mockCapturePane
+      .mockReturnValueOnce('/mcp menu')
+      .mockReturnValueOnce('plugin:telegram:telegram')
+      // Submenu never shows a row with the cursor on it -> onTarget never true;
+      // the loop re-captures on every step it takes (SUBMENU_MAX_STEPS+1 times).
+      .mockReturnValue('plugin:telegram:telegram\n  Reconnect\n  Disable')
+
+    attemptChannelMcpReconnect('marveen')
+
+    const warnCall = vi.mocked(logger.warn).mock.calls.find(
+      (c) => typeof c[1] === 'string' && c[1].includes('could not place cursor on target option'),
+    )
+    expect(warnCall).toBeDefined()
+    const fields = warnCall![0] as Record<string, unknown>
+    expect(fields.paneTail).toContain('Reconnect')
   })
 
   it('uses correct session for sub-agents', () => {

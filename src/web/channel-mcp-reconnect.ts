@@ -12,6 +12,20 @@ import { paneLooksIdle, detectPaneState } from '../pane-state.js'
 const TMUX = resolveFromPath('tmux')
 const MAX_UP_ATTEMPTS = 8
 
+// Measured 2026-08-24 (card marveen-channel-gyakori-restart-20260824): 34 of
+// ~42 logged "plugin down" episodes hit one of the three failure branches
+// below, but the warn() carried only a fixed message string -- no pane
+// content -- so there was no way to tell WHY the menu walk got lost (stale
+// render, unexpected wording, an extra CC UI frame, ...) after the fact.
+// Every failure branch now attaches the last pane it actually saw, so the
+// next incident has evidence instead of another guess. Capped, not the full
+// pane: this is diagnostic context in a shared log file, not a debugger dump.
+const PANE_TAIL_MAX_CHARS = 1500
+function paneTail(pane: string | null | undefined): string {
+  if (!pane) return '(no pane captured)'
+  return pane.length > PANE_TAIL_MAX_CHARS ? pane.slice(-PANE_TAIL_MAX_CHARS) : pane
+}
+
 /**
  * Fully dismiss the /mcp modal before returning.
  *
@@ -204,6 +218,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
     }
 
     let matchedAt = -1
+    let lastListPane: string | null = null
     for (let upCount = 1; upCount <= MAX_UP_ATTEMPTS; upCount++) {
       execFileSync(TMUX, ['send-keys', '-t', session, 'Up'], { timeout: 3000 })
       execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 })
@@ -211,6 +226,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
       execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
 
       const pane = capturePane(session)
+      lastListPane = pane
       if (pane && pluginPattern.test(pane)) {
         matchedAt = upCount
         break
@@ -221,7 +237,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
 
     if (matchedAt < 0) {
       logger.warn(
-        { agentName, session, maxUpAttempts: MAX_UP_ATTEMPTS, pluginPattern: pluginPattern.source },
+        { agentName, session, maxUpAttempts: MAX_UP_ATTEMPTS, pluginPattern: pluginPattern.source, paneTail: paneTail(lastListPane) },
         'channel-mcp-reconnect: plugin submenu not found',
       )
       dismissMcpMenu(session)
@@ -240,7 +256,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
 
     const target = chooseSubmenuTarget(submenu)
     if (!target) {
-      logger.warn({ agentName, session }, 'channel-mcp-reconnect: no Reconnect/Enable option in submenu')
+      logger.warn({ agentName, session, paneTail: paneTail(submenu) }, 'channel-mcp-reconnect: no Reconnect/Enable option in submenu')
       dismissMcpMenu(session)
       return { ok: false, message: 'No Reconnect/Enable option in submenu' }
     }
@@ -259,7 +275,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
 
     if (!onTarget) {
       logger.warn(
-        { agentName, session, target: target.source, maxSteps: SUBMENU_MAX_STEPS },
+        { agentName, session, target: target.source, maxSteps: SUBMENU_MAX_STEPS, paneTail: paneTail(submenu) },
         'channel-mcp-reconnect: could not place cursor on target option',
       )
       dismissMcpMenu(session)
