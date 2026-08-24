@@ -6,6 +6,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { computeStaleBlockerRefs, type StaleBlockerCardInput, type StaleBlockerRef } from './kanban-stale-blocker-refs.js'
+import { computeUnsentWaitingQuestions, type UnsentQuestionCardInput, type UnsentQuestionRef } from './kanban-unsent-question.js'
 
 let db: Database.Database
 
@@ -2068,6 +2069,7 @@ export interface HeartbeatKanbanSummary {
   in_progress: KanbanCard[]
   waiting: KanbanCard[]
   staleBlockers: StaleBlockerRef[]
+  unsentQuestions: UnsentQuestionRef[]
 }
 
 /**
@@ -2124,12 +2126,36 @@ export function getStaleBlockerRefs(): StaleBlockerRef[] {
   return computeStaleBlockerRefs(openCards, closedSeqs, commentsByCardId)
 }
 
+// Inputs for computeUnsentWaitingQuestions (kanban-unsent-question.ts): every
+// waiting card assigned to marveen or jozsi (the candidate set -- these are
+// exactly the cards that mean "blocked on the owner's decision") plus every
+// comment keyed by card id (the KIKULDVE marker, when present, lives in a
+// comment). LOWER() is required, not a style choice: measured against the
+// live board, assignee carries both 'marveen' and 'Marveen' on waiting cards
+// -- a case-sensitive filter silently drops the capitalized ones.
+export const UNSENT_QUESTION_WAITING_CARDS_SQL =
+  "SELECT id, title FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting' AND LOWER(assignee) IN ('marveen', 'jozsi')"
+
+export function getUnsentWaitingQuestions(): UnsentQuestionRef[] {
+  const waitingMarveenCards = db.prepare(UNSENT_QUESTION_WAITING_CARDS_SQL).all() as UnsentQuestionCardInput[]
+  const commentRows = db.prepare('SELECT card_id, content FROM kanban_comments').all() as
+    { card_id: string; content: string }[]
+  const commentsByCardId = new Map<string, string[]>()
+  for (const row of commentRows) {
+    const arr = commentsByCardId.get(row.card_id) ?? []
+    arr.push(row.content)
+    commentsByCardId.set(row.card_id, arr)
+  }
+  return computeUnsentWaitingQuestions(waitingMarveenCards, commentsByCardId)
+}
+
 export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
   const urgent = db.prepare(HEARTBEAT_URGENT_SQL).all() as KanbanCard[]
   const in_progress = db.prepare(HEARTBEAT_IN_PROGRESS_SQL).all() as KanbanCard[]
   const waiting = db.prepare(HEARTBEAT_WAITING_SQL).all() as KanbanCard[]
   const staleBlockers = getStaleBlockerRefs()
-  return { urgent, in_progress, waiting, staleBlockers }
+  const unsentQuestions = getUnsentWaitingQuestions()
+  return { urgent, in_progress, waiting, staleBlockers, unsentQuestions }
 }
 
 // --- Agent Messages ---

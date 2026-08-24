@@ -299,6 +299,8 @@ interface HeartbeatData {
     waitingLabels: string[]
     staleBlockers: number
     staleBlockerLabels: string[]
+    unsentQuestions: number
+    unsentQuestionLabels: string[]
   }
   system: SystemInfo
   tasks: { count: number; nextRun: number | null }
@@ -346,10 +348,15 @@ function collectKanban(): HeartbeatData['kanban'] {
       waitingLabels: summary.waiting.map(formatHeartbeatCardLabel),
       staleBlockers: summary.staleBlockers.length,
       staleBlockerLabels: summary.staleBlockers.map(formatStaleBlockerLabel),
+      unsentQuestions: summary.unsentQuestions.length,
+      unsentQuestionLabels: summary.unsentQuestions.map(formatHeartbeatCardLabel),
     }
   } catch (err) {
     logger.error({ err }, 'Heartbeat: kanban fetch failed')
-    return { urgent: 0, in_progress: 0, waiting: 0, urgentLabels: [], waitingLabels: [], staleBlockers: 0, staleBlockerLabels: [] }
+    return {
+      urgent: 0, in_progress: 0, waiting: 0, urgentLabels: [], waitingLabels: [],
+      staleBlockers: 0, staleBlockerLabels: [], unsentQuestions: 0, unsentQuestionLabels: [],
+    }
   }
 }
 
@@ -451,6 +458,11 @@ function buildAgentPrompt(data: HeartbeatData): string {
   prompt += `- Stale blokkolo-hivatkozas: ${data.kanban.staleBlockers}`
   if (data.kanban.staleBlockerLabels.length > 0) {
     prompt += ` ${wrapUntrusted('kanban-stale-blocker-titles', data.kanban.staleBlockerLabels.join(', '))}`
+  }
+  prompt += '\n'
+  prompt += `- Kikuldetlen kerdes (waiting+marveen, nincs KIKULDVE-jelolo komment): ${data.kanban.unsentQuestions}`
+  if (data.kanban.unsentQuestionLabels.length > 0) {
+    prompt += ` ${wrapUntrusted('kanban-unsent-question-titles', data.kanban.unsentQuestionLabels.join(', '))}`
   }
   prompt += '\n\n'
 

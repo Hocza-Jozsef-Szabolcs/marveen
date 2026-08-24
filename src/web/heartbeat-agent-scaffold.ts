@@ -212,7 +212,7 @@ When you receive the heartbeat prompt:
      \`\`\`
 
      It returns exactly what this section may report:
-     \`{"urgent":[...], "waiting":[...], "staleBlockers":[...], "counts":{...}}\`,
+     \`{"urgent":[...], "waiting":[...], "staleBlockers":[...], "unsentQuestions":[...], "counts":{...}}\`,
      where the urgent/waiting lists contain only UNFINISHED cards --
      never archived, never \`done\`, but \`planned\` included, because
      "urgent and nobody has touched it" is exactly what this line is
@@ -224,6 +224,14 @@ When you receive the heartbeat prompt:
      blocker no longer holds. Report each entry as
      "\`<id>\` cites #<referencedSeq>, already closed" and nothing more:
      do not guess WHY the card was not moved.
+
+     \`unsentQuestions\` is a third, separate signal: a \`waiting\`
+     card assigned to \`marveen\` (blocked on the owner's decision)
+     with NO comment recording that the question was actually sent
+     (the marker convention: a comment containing "KIKULDVE" or
+     "ELKULDVE" plus a \`{szam}\` Telegram sequence reference). Report
+     each entry as "\`<id>\` waiting on marveen, no KIKULDVE marker" --
+     this means the blocking question may never have gone out.
 
      Two things this replaces, both measured: the old instruction told
      you to write the filter yourself, and on 2026-08-04 the 09:00
