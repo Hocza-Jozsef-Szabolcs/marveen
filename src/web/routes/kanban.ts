@@ -261,6 +261,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'A "project" mező kötelező' }, 400)
       return true
     }
+    // A VHR8-nak semmilyen önkezdeményezett figyelem nem járhat, amíg Józsi nem
+    // szól -- kimondva 2026-08-04, 2026-08-20, 2026-08-24 (harmadszor, mert az
+    // írott szabály önmagában nem elég). override:true-val a gazda saját kérése
+    // is átmegy.
+    const vhr8Rx = /vhr[\s-]?8/i
+    if (!data.override && (vhr8Rx.test(String(data.title ?? '')) || vhr8Rx.test(String(data.description ?? '')))) {
+      json(res, { error: 'VHR8 -- önkezdeményezett kártya tiltva, amíg Józsi nem kéri (override:true kell)' }, 400)
+      return true
+    }
     const id = typeof data.id === 'string' && data.id.trim() ? data.id : randomUUID().slice(0, 8)
     createKanbanCard({ ...data, id })
     json(res, { ok: true, id })
