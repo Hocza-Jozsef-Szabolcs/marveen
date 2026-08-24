@@ -42,7 +42,13 @@ for fej in $idle; do
   # coalesce KOTELEZO: SQL harom-erteku logikaban a `project='VHR'` NULL project eseten NULL-t
   # ad (nem FALSE-t), es a `not (NULL or ...)` is NULL marad -- a WHERE ekkor a sort KIHAGYJA,
   # nem befogadja. Enelkul MINDEN ures project-u, nem-VHR kartya csendben eltunt volna a listabol.
-  vhr_feltetel="(coalesce(project,'')='VHR' or title like '%VHR%' or coalesce(description,'') like '%VHR%')"
+  #
+  # A cim/leiras-szoveges fallback CSAK URES project mezonel fut -- ha a project explicit ki van
+  # toltve valami MASSAL, azt kell hinni, nem a szoveget (2026-08-24, sajat hiba: a 98f3b15e,
+  # project='MARVEEN', a leirasaban parhuzamos peldakent felsorolta a "VHR5"-ot is, ez a regi
+  # `or title/description like '%VHR%'` miatt VHR-korlatozottnak latszott, es a backend orakig
+  # tetlenul allt tole -- holott Jozsi sajat, nem-VHR feladata volt).
+  vhr_feltetel="(coalesce(project,'')='VHR' or (coalesce(project,'')='' and (title like '%VHR%' or coalesce(description,'') like '%VHR%')))"
   cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null and not $vhr_feltetel order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
   if [ -z "$cards" ]; then
     vhr_count=$(sqlite3 "$DB" "select count(*) from kanban_cards where assignee='$fej' and status='planned' and archived_at is null and $vhr_feltetel;")
