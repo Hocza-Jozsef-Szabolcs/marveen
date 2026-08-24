@@ -728,8 +728,8 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     fi
     mkdir -p "$target"
     for f in "$skill_dir"*; do
-      [ -f "$f" ] || continue
-      cp "$f" "$target/$(basename "$f")"
+      [ -e "$f" ] || continue
+      cp -R "$f" "$target/$(basename "$f")"
     done
     if [ "$forced" = "1" ]; then SEED_FORCED=$((SEED_FORCED + 1)); else SEED_NEW=$((SEED_NEW + 1)); fi
   done
