@@ -35,7 +35,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
-    const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string }
+    const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string; project?: string }
     if (!data.content?.trim()) { json(res, { error: 'Content is required' }, 400); return true }
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
@@ -55,7 +55,8 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       data.content.trim(),
       category,
       data.keywords || undefined,
-      true
+      true,
+      data.project || undefined
     )
     json(res, { ok: true, id: result.id })
     return true
@@ -69,11 +70,20 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
     const agentId = url.searchParams.get('agent') || agentIdAlias || ''
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
+    const project = url.searchParams.get('project') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'fts'
 
     let results: Memory[]
-    if (q && mode === 'hybrid') {
+    if (project && !q) {
+      // Dedicated SQL path (not a post-filter): a fresh session bootstrap asks
+      // "everything tagged for project X" and needs the LIMIT to apply to
+      // that set, not to some unrelated listing filtered down afterwards.
+      const db2 = getDb()
+      results = agentId
+        ? db2.prepare("SELECT * FROM memories WHERE project = ? AND (agent_id = ? OR category = 'shared') ORDER BY created_at DESC LIMIT ?").all(project, agentId, limit) as Memory[]
+        : db2.prepare('SELECT * FROM memories WHERE project = ? ORDER BY created_at DESC LIMIT ?').all(project, limit) as Memory[]
+    } else if (q && mode === 'hybrid') {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit)
     } else if (q && agentId) {
       results = searchAgentMemories(agentId, q, limit)
@@ -96,9 +106,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
 
     // Still needed for the search branches above, which rank by relevance and
-    // cannot push the category down into their own LIMIT. A no-op for the
-    // plain agent listing, which already filtered in SQL.
+    // cannot push the category/project down into their own LIMIT. A no-op for
+    // the plain agent/project listings, which already filtered in SQL.
     if (tier) results = results.filter(m => m.category === tier)
+    if (project && q) results = results.filter(m => m.project === project)
 
     // A search query (q) is a genuine recall: stamp the surfaced memories as
     // just-accessed so accessed_at reflects real usage. Plain listing (no q,
