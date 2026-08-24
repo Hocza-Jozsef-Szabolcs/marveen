@@ -94,9 +94,9 @@ MOCKEOF
 }
 
 seed_card() {
-  local id="$1" status="$2" assignee="$3" priority="${4:-normal}" created_at="${5:-0}"
+  local id="$1" status="$2" assignee="$3" priority="${4:-normal}" created_at="${5:-0}" description="${6:-}"
   sqlite3 "$FTmp/root/store/claudeclaw.db" \
-    "insert into kanban_cards (id,title,status,assignee,priority,created_at,updated_at) values ('$id','Teszt','$status','$assignee','$priority',$created_at,0);"
+    "insert into kanban_cards (id,title,description,status,assignee,priority,created_at,updated_at) values ('$id','Teszt','$description','$status','$assignee','$priority',$created_at,0);"
 }
 
 # hu: a futo fejek listaja -- delphi ABECEBEN design es ereceipt ELOTT all, ahogy elesben is.
@@ -230,6 +230,73 @@ else
   echo "1" > "$FTmp/kilepokod/delphi-K-delphi-1"
   rc=$(run_script)
   check "T6 mutansnal a masodik kartya MAR NEM probalt (a T4 visszajon)" "0" "$(hivas_szam 'KIOSZTAS: K-delphi-2 delphi')"
+fi
+
+echo "── T7: leiras vegen lezaro-jelzo (MEGOLDVA:) -> NE ossza ki, GYANUS jelzes, a masik kartya menjen ─"
+# Elo eset (2026-08-24, negy kartya egy oran belul: sorvegellenor, freesdrv, dfmtimeoutstale,
+# tcpwin7timeout, majd vhrtesztnev) -- a leiras VEGE mar tartalmazta a lezaras jelet egy korabbi
+# kanban-adatvesztes/elmaradt statusz-valtas miatt, a status megis planned maradt.
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-1 planned delphi urgent 0 "Resz 1.\n\nMEGOLDVA: mar kesz, commit abc123."
+seed_card K-delphi-2 planned delphi urgent 1 "Meg nyitott munka, normal leiras."
+rc=$(run_script)
+check "T7 a lezart kartya NEM lett kiosztva"     "0" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+check "T7 a nyitott kartya IGEN kiosztva"        "1" "$(hivas_szam 'KIOSZTAS: K-delphi-2 delphi')"
+check "T7 GYANUS jelzes a kimenetben"            "1" "$(grep -c 'GYANUS' "$FTmp/kimenet" || true)"
+check "T7 kilepesi kod 0"                        "0" "$rc"
+
+echo "── T9: minden planned kartya lezart -> a fej MINDEGYIK-en fennakad, nincs kiosztas ─────"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-1 planned delphi urgent 0 "TARGYTALAN -- lezarva 2026-08-04."
+rc=$(run_script)
+check "T9 a lezart kartya NEM lett kiosztva"     "0" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+check "T9 GYANUS jelzes a kimenetben"            "1" "$(grep -c 'GYANUS' "$FTmp/kimenet" || true)"
+check "T9 kilepesi kod 0"                        "0" "$rc"
+
+echo "── T10: HAMIS POZITIV -- 'marveen dontese' egy AKTIV feladat kozepen, nem lezaras ──"
+# Elo eset (2026-08-24, `vhrkapuhatokor`): a leiras egy KOZBULSO szakasz fejleceben tartalmazza
+# a "marveen dontese" szot ("=== ELJARAS (marveen dontese, 2026-08-06) ==="), de a szakasz maga
+# egy AKTIV munka-utasitas (ket kez, nem egyszerre), nem lezaras -- a kartya VALODI nyitott munka.
+# A "marveen dontese" onmagaban tul tag minta, a tobbi (MEGOLDVA:/TARGYTALAN/KESZ ES COMMITOLVA/
+# LEZARVA) mind a NEGY korabbi valos esetben (freesdrv/sorvegellenor/dfmtimeoutstale/tcpwin7timeout)
+# ONMAGABAN is jelen volt -- a "marveen dontese" eltavolitasa nem gyengiti a valodi detektalast.
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-1 planned delphi urgent 0 "=== ELJARAS (marveen dontese, 2026-08-06) ===
+A kapu MODOSITASA es az ELLENORZESE ket kezben marad, de NEM egyidoben."
+rc=$(run_script)
+check "T10 az aktiv kartya IGEN kiosztva (nincs hamis GYANUS)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+check "T10 kilepesi kod 0"                                     "0" "$rc"
+
+echo "── T8 (MUTACIO): a lezaro-jelzo szures kivetele -> a T7 BUKJON vissza ─────────"
+CMutans3="$FTmp/fej-idle-dispatch-mutans3.sh"
+python3 - "$CScript" "$CMutans3" <<'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+# A vedelmi blokkot (a "MEGOLDVA|TARGYTALAN|..." elleni grep-et) kihagyjuk -- ha nincs ilyen
+# blokk meg (a javitas nincs kesz), a fajl valtozatlan marad, a hivo ezt eszreveszi.
+new = re.sub(
+    r"\n *if echo \"\$leiras\".*?\n *fi\n",
+    "\n",
+    text, count=1, flags=re.S,
+)
+if new != text:
+    open(dst, 'w').write(new)
+PYEOF
+if [ ! -s "$CMutans3" ] || cmp -s "$CScript" "$CMutans3" 2>/dev/null; then
+  echo "  ⚠️  T8 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+  seed_card K-delphi-1 planned delphi urgent 0 "Resz 1.\n\nMEGOLDVA: mar kesz, commit abc123."
+  seed_card K-delphi-2 planned delphi urgent 1 "Meg nyitott munka, normal leiras."
+  cp "$CMutans3" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T8 mutansnal a lezart kartya IS kiosztva (a T7 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
 fi
 
 echo

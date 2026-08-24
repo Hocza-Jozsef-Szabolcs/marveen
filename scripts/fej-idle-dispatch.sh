@@ -39,6 +39,18 @@ for fej in $idle; do
   fi
   kiosztva=0
   for card in $cards; do
+    # A leiras VEGE lezaro-jelzot hordozhat (mar kesz/eldontott munka, a status planned maradt
+    # egy korabbi kanban-adatvesztes/elmaradt statusz-valtas miatt -- 2026-08-24, ot eset egy
+    # oran belul). Ilyenkor NE ossza ki automatikusan: a koordinator ellenorzese kell elotte.
+    leiras=$(sqlite3 "$DB" "select description from kanban_cards where id='$card';")
+    # "MARVEEN DONTESE" ONMAGABAN NINCS a listaban: tul tag (barmilyen koordinatori
+    # ELJARAS-donteshez illeszkedik, nem csak lezarashoz -- lasd T10 / vhrkapuhatokor,
+    # ahol egy AKTIV feladat kozbulso szakaszcime volt, nem lezaras). A negy korabbi
+    # valos eset mindegyikeben ONMAGABAN is jelen volt legalabb egy a lenti mintak kozul.
+    if echo "$leiras" | grep -qiE "MEGOLDVA:|TARGYTALAN|KESZ ES COMMITOLVA|LEZARVA"; then
+      echo "GYANUS: $fej -> $card mar keszen allhat (a leirasban lezaro jelzo all) -- ELLENORIZD"
+      continue
+    fi
     echo "TETLEN: $fej -> $card kiosztasa..."
     # `if` az egyetlen `set -e`-kivetel: egy blokkolt fej (nemnulla rc) NE szakitsa meg a ciklust,
     # kulonben az abecerendben UTANA kovetkezo fejek egyike sem kap eselyt kiosztasra.
