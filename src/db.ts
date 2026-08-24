@@ -398,8 +398,7 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_comments(card_id)`)
 
   // Status-change audit trail: one row per real status transition so the board
-  // can answer "who moved this card, when, from/to status". Written by
-  // moveKanbanCard only when the status actually changes.
+  // can answer "who moved this card, when, from/to status".
   db.exec(`
     CREATE TABLE IF NOT EXISTS kanban_card_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -411,6 +410,43 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+
+  // Status-change audit is a DB-level trigger, not application code, so a
+  // status write CANNOT bypass it -- moveKanbanCard, updateKanbanCard, and
+  // any raw SQL UPDATE against kanban_cards all fire the same trigger
+  // (kanban-statusz-valtas-nyomtalanul-megkerulheto-20260814: a raw SQL
+  // UPDATE left no trace at all, twice, on the day this was found). The
+  // trigger is the SOLE writer of kanban_card_events for status changes --
+  // application code must not INSERT into it directly, or a transition
+  // would be recorded twice.
+  //
+  // A trigger has no access to a caller-supplied "actor" value (it only
+  // sees OLD/NEW row columns), so the actor is handed over through this
+  // one-row context table: the caller sets it immediately before running
+  // the UPDATE, and clears it immediately after (regardless of whether the
+  // UPDATE matched a row), so a write path that doesn't know about the
+  // context (raw SQL) always sees actor = NULL, never a stale leftover
+  // value from an unrelated earlier call.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_audit_actor_ctx (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      actor TEXT
+    )
+  `)
+  db.exec(`INSERT OR IGNORE INTO kanban_audit_actor_ctx (id, actor) VALUES (1, NULL)`)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_cards_status_audit
+    AFTER UPDATE OF status ON kanban_cards
+    WHEN OLD.status <> NEW.status
+    BEGIN
+      INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at)
+      VALUES (
+        NEW.id, OLD.status, NEW.status,
+        (SELECT actor FROM kanban_audit_actor_ctx WHERE id = 1),
+        CAST(strftime('%s', 'now') AS INTEGER)
+      );
+    END
+  `)
 
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
@@ -1729,25 +1765,31 @@ export function createKanbanCard(card: {
   )
 }
 
+// Hands the caller's actor to the kanban_cards_status_audit trigger for the
+// duration of a single UPDATE (see the trigger's own comment for why this
+// context table exists instead of an application-level INSERT). Always
+// clears the context afterwards, even if the UPDATE matched no row, so a
+// later raw-SQL write never inherits a stale actor from an unrelated call.
+function withKanbanAuditActor<T>(actor: string | undefined, run: () => T): T {
+  db.prepare('UPDATE kanban_audit_actor_ctx SET actor = ? WHERE id = 1').run(actor ?? null)
+  try {
+    return run()
+  } finally {
+    db.prepare('UPDATE kanban_audit_actor_ctx SET actor = NULL WHERE id = 1').run()
+  }
+}
+
 export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>, actor?: string): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
-  const changed = db.prepare(
+  // Status-change audit event (kanban_card_events) is written by the
+  // kanban_cards_status_audit DB trigger, not here -- see its definition.
+  return withKanbanAuditActor(actor, () => db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
-  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
-  // Audit trail: PUT /api/kanban/:id can change status just like POST .../move,
-  // but had no event -- a status change made through PUT left no trace in
-  // kanban_card_events. Same shape as moveKanbanCard's insert, only fired on a
-  // real transition (not a same-status field update).
-  if (changed && fields.status !== undefined && fields.status !== card.status) {
-    db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, card.status, fields.status, actor ?? null, now)
-  }
-  return changed
+  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0)
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
@@ -1756,18 +1798,11 @@ export function getChildCards(parentId: string): KanbanCard[] {
 
 export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
-  // Read the previous status first so we only record an audit event on a real
-  // status transition (not a pure sort_order reorder within the same column).
-  const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
-  const changed = db.prepare(
+  // Status-change audit event (kanban_card_events) is written by the
+  // kanban_cards_status_audit DB trigger, not here -- see its definition.
+  return withKanbanAuditActor(actor, () => db.prepare(
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-  ).run(status, sortOrder, now, id).changes > 0
-  if (changed && prev !== undefined && prev !== status) {
-    db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now)
-  }
-  return changed
+  ).run(status, sortOrder, now, id).changes > 0)
 }
 
 // Stamp the once-only kanban -> agent dispatch guard. Returns false if the
