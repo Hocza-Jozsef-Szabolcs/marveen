@@ -837,6 +837,24 @@ export function idleConsideringDimGhost(plain: string, dimStripped: string | nul
   return dimStripped != null && paneLooksIdle(dimStripped)
 }
 
+/**
+ * Label used by the dashboard "Csapat/Aktivitas" widget (/api/agents/activity)
+ * for one agent's current pane. 'typing' is resolved through
+ * idleConsideringDimGhost instead of being mapped straight to 'working', so a
+ * parked GHOST suggestion (Claude Code's dim placeholder in an EMPTY input
+ * box) reads as 'idle' -- a plain capture cannot tell it apart from real
+ * parked text, only the dim-stripped view (captureParkedInputView) can.
+ */
+export function activityLabel(running: boolean, plain: string | null, dimStripped: string | null): string {
+  if (!running) return 'stopped'
+  if (plain === null) return 'unknown'
+  const s = detectPaneState(plain)
+  if (s === 'busy') return 'working'
+  if (s === 'typing') return idleConsideringDimGhost(plain, dimStripped) ? 'idle' : 'working'
+  if (s === 'idle') return 'idle'
+  return s // 'unknown' | 'error'
+}
+
 // Locate the live Claude Code input box and return its inner content as
 // one string. Bounded strictly to the region between the two most
 // recent BOX_SEP_RX separators above the idle footer, so a parked input

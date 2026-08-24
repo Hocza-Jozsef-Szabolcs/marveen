@@ -103,12 +103,13 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  captureParkedInputView,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
-import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
+import { detectPaneState, detectPermissionMode, activityLabel } from '../../pane-state.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
@@ -681,13 +682,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // fleet, not just sub-agents. Restored after #226 dropped this route while the
   // frontend kept calling /api/agents/activity (which then 404'd the panel).
   if (path === '/api/agents/activity' && method === 'GET') {
-    const label = (running: boolean, pane: string | null): string => {
-      if (!running) return 'stopped'
-      if (pane === null) return 'unknown'
-      const s = detectPaneState(pane)
-      if (s === 'busy' || s === 'typing') return 'working'
-      if (s === 'idle') return 'idle'
-      return s // 'unknown' | 'error'
+    // Dim-ghost tolerant label: only pay for the second (-e, dim-stripped)
+    // capture when the plain view says 'typing' -- same lazy pattern as
+    // isSessionReadyForPrompt's idleOrGhost (agent-process.ts).
+    const label = (running: boolean, pane: string | null, session: string, host: string | null = null): string => {
+      const dimStripped = pane !== null && detectPaneState(pane) === 'typing'
+        ? captureParkedInputView(session, host)
+        : null
+      return activityLabel(running, pane, dimStripped)
     }
     const tailOf = (pane: string | null): string[] =>
       pane === null
@@ -716,7 +718,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         name: MAIN_AGENT_ID,
         isMain: true,
         running,
-        state: label(running, mainPane),
+        state: label(running, mainPane, MAIN_CHANNELS_SESSION),
         mode: modeOf(running, mainPane),
         tail: tailOf(mainPane),
       })
@@ -734,7 +736,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
           : capturePane(agentSessionName(name))
       }
-      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
+      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane, agentSessionName(name), host)
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
 
