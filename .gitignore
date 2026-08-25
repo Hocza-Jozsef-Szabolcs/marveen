@@ -98,3 +98,4 @@ __pycache__/
 
 # Swift build output (a TCC-engedely a binarishoz kotodik -- ujrafordítás utan ujra kell engedelyezni)
 scripts/bin/
+hooks/.state/
