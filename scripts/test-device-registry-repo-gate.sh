@@ -531,6 +531,64 @@ git -C "$REPO" -c user.email=t@t -c user.name=t commit -qm props
 run_case "P6 CSAK Directory.Build.props-ban allo hivatkozas -> a kapu LATJA" 1 "MERETLEN FUGGoSEG" \
     check TESZT-ESZKOZ --repo "$REPO"
 
+# ================================================================================================
+# hu: A `--path` SZUKITES ES A `ProjectReference`-MERES HATOKORE ELTERT (a kartya (a) tetele).
+#     A `MERETLEN FUGGoSEG` bejaras a TELJES repot vegigment, fuggetlenul a `--path`-tol -- egy
+#     `Other/`-beli, a forditasba be sem vont csproj kifele mutato hivatkozasa is riasztott, holott
+#     azt a projektet a `--path Proj` szukites szerint NEM forditjuk. Eles fan ez MA nem tuzel,
+#     de a zaj a kapu MEGKERULESEHEZ vezet.
+# ================================================================================================
+make_repo
+mkdir -p "$WORK/kulso2"
+printf '<Project Sdk="Microsoft.NET.Sdk"></Project>\n' > "$WORK/kulso2/Kulso2.csproj"
+printf '<Project Sdk="Microsoft.NET.Sdk">\n  <ItemGroup>\n    <ProjectReference Include="..\\..\\kulso2\\Kulso2.csproj" />\n  </ItemGroup>\n</Project>\n' > "$REPO/Other/Other.csproj"
+git -C "$REPO" add -A
+git -C "$REPO" -c user.email=t@t -c user.name=t commit -qm other-ref
+
+run_case "Y1 --path Proj: az Other/ hatokoron KIVULI dangling ref NEM riaszt -> MEHET" 0 "MUNKAFA: tiszta" \
+    check TESZT-ESZKOZ --repo "$REPO" --path Proj
+run_case "Y2 UGYANAZ --path NELKUL: a teljes repo merve, a dangling ref TOVABBRA IS lattatik -> ALLJ MEG" 1 "MERETLEN FUGGoSEG" \
+    check TESZT-ESZKOZ --repo "$REPO"
+
+make_repo
+mkdir -p "$WORK/kulso2"
+printf '<Project Sdk="Microsoft.NET.Sdk"></Project>\n' > "$WORK/kulso2/Kulso2.csproj"
+printf '<Project Sdk="Microsoft.NET.Sdk">\n  <ItemGroup>\n    <ProjectReference Include="..\\..\\kulso2\\Kulso2.csproj" />\n  </ItemGroup>\n</Project>\n' > "$REPO/Proj/Proj.csproj"
+git -C "$REPO" add -A
+git -C "$REPO" -c user.email=t@t -c user.name=t commit -qm proj-ref
+run_case "Y3 --path Proj: a HATOKORON BELULI dangling ref TOVABBRA IS riaszt -> ALLJ MEG" 1 "MERETLEN FUGGoSEG" \
+    check TESZT-ESZKOZ --repo "$REPO" --path Proj
+
+# ================================================================================================
+# hu: A `_commits_since` A MERGE-COMMITOT IS EGY COMMITKENT SZAMOLTA (a kartya (b) tetele) --
+#     egy feature-agon egyetlen tartalmi commit + a `--no-ff` merge-commit egyutt 2-t adott,
+#     mikozben a tenyleges TARTALMI valtozas csak 1 (a merge maga nem hoz uj diffet).
+# ================================================================================================
+make_repo_pair
+# hu: MINDHAROM IDoPONT EXPLICIT, TAVOL EGYMASTOL -- a masodperc-felbontasu `--since` egyazon
+#     masodpercben (amiben a `make_repo_pair` sajat commitjai amugy is keletkeznek) ALLASI
+#     bizonytalansagot adna: a `repo2` sajat INIT-commitja veletlenul a "since"-be eshetne, es a
+#     szamlalot 1-gyel megnovelne, FUGGETLENUL a merge-fixtol. A repo2 init-commitja tehat a
+#     "since"-nel (2030) korabbi (a `make_repo_pair` "most" keletkezteti, 2026); a feature- es
+#     merge-commit a "since"-nel kesobbi (2031), egymastol is elkulonitve.
+GIT_COMMITTER_DATE="2030-01-01T00:00:00+00:00" git -C "$REPO" -c user.email=t@t -c user.name=t \
+    commit -q --date="2030-01-01T00:00:00+00:00" --allow-empty -m init-marker
+echo "771" > "$REPO/BuildNumberV2.txt"; git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2030-01-02T00:00:00+00:00" git -C "$REPO" -c user.email=t@t -c user.name=t \
+    commit -q --date="2030-01-02T00:00:00+00:00" -m build
+make_aapt2 771
+git -C "$REPO2" checkout -q -b feature
+echo "uj tartalom" > "$REPO2/Lib/Uj.cs"
+git -C "$REPO2" add -A
+GIT_COMMITTER_DATE="2031-01-01T00:00:00+00:00" git -C "$REPO2" -c user.email=t@t -c user.name=t \
+    commit -q --date="2031-01-01T00:00:00+00:00" -m "feature commit"
+git -C "$REPO2" checkout -q main
+GIT_COMMITTER_DATE="2031-01-02T00:00:00+00:00" GIT_AUTHOR_DATE="2031-01-02T00:00:00+00:00" \
+    git -C "$REPO2" -c user.email=t@t -c user.name=t merge -q --no-ff -m "merge feature" feature
+run_case "M1 1 tartalmi commit + 1 merge-commit -> a szamlalo 1-et jelez, NEM 2-t" 0 \
+    "1 commit a build-szam utolso valtozasa ota" \
+    check TESZT-ESZKOZ --repo "$REPO" --repo "$REPO2" --apk "$APK"
+
 echo
 echo "osszesen: $((PASS + FAIL)) eset, PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -gt 0 ]; then

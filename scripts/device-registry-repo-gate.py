@@ -62,8 +62,18 @@ def _buildnumber_last_change(repo, bf):
 
 
 def _commits_since(repo, iso):
-    """hu: hany commit tortent a repoban az adott ido ota. None, ha nem merheto."""
-    r = git(repo, "log", "--since=%s" % iso, "--oneline")
+    """hu: hany TARTALMI commit tortent a repoban az adott ido ota. None, ha nem merheto.
+
+    hu: A `--no-merges` KOTELEZo -- egy merge-commit onmagaban nem hoz uj diffet (a tartalma mar
+        a sajat szuloi kozott ott van), tehat egy feature-agon 1 tartalmi commit + a rea kovetkezo
+        `--no-ff` merge egyutt 2-t adott a regi alakban, mikozben a tenyleges valtozas 1 volt.
+        Az irany igy is konzervativ marad (a merge maga is JELEZHET tartalmi diffet konfliktus-
+        feloldasnal -- azt ez a szamlalo elveszti --, de a kartya (b) tetele szerint a tulszamlalas
+        a rosszabb irany, mert a zaj a kapu MEGKERULESEHEZ vezet).
+    en: `--no-merges` is required -- a merge commit by itself carries no new diff, so a feature
+        branch with 1 content commit plus its `--no-ff` merge used to count as 2 real changes.
+    """
+    r = git(repo, "log", "--no-merges", "--since=%s" % iso, "--oneline")
     if r.returncode != 0:
         return None
     return len([l for l in r.stdout.splitlines() if l.strip()])
@@ -282,11 +292,18 @@ def main(argv):
         # hu: A REPON KIVULRE MUTATO `ProjectReference` MERETLEN FUGGoSEG. Merve: a JokerQ APK HAROM
         #     git-repobol fordul. A DARABSZAM KIIRASA a lenyeg: ma minden hivatkozas feloldhato, es
         #     ha holnap bekerul egy nem feloldhato alak, a szam az, ami jelezni fog.
+        # hu: 🛑 A HATOKOR EGYEZZEN A `--path` SZUKITESSEL. Ha `paths` all, a bejaras a `hits`-ben
+        #     mar megmert, `--path`-nak megfelelo NYOMON KOVETETT fajlokra szukul -- egy a
+        #     hatokoron KIVULI (nem forditott) projekt kifele mutato hivatkozasa igy nem riaszt.
+        #     `paths` NELKUL nincs szukites, a viselkedes valtozatlan.
+        scoped = set(hits) if paths else None
         resolved_n, csprojs = 0, []
         for dirpath, dirnames, filenames in os.walk(r):
             dirnames[:] = [d for d in dirnames if d not in (".git", "obj", "bin")]
             csprojs += [os.path.join(dirpath, f) for f in filenames
                         if f.endswith((".csproj", ".props", ".targets"))]
+        if scoped is not None:
+            csprojs = [cs for cs in csprojs if os.path.relpath(cs, r).replace(os.sep, "/") in scoped]
         for cs in csprojs:
             try:
                 xml = open(cs, encoding="utf-8", errors="replace").read()
