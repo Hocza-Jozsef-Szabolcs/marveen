@@ -11,7 +11,7 @@
     "status": "tsx scripts/status.ts",
     "remote-enroll": "tsx scripts/remote-access-enroll.ts",
     "dashboard-user": "tsx scripts/dashboard-user.ts",
-    "test": "vitest run",
+    "test": "scripts/run-with-service-node.sh vitest run",
     "typecheck": "tsc --noEmit",
     "syntax-check": "node --check web/app.js web/sw.js",
     "smoke": "playwright test --config=playwright.config.ts"
