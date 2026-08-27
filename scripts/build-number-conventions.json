@@ -1,12 +1,7 @@
 {
   "_hu": "Melyik repo milyen build-szam-konvenciot kovet: 'minden-commit-leptet' (a szam MINDEN commiton lep, ez az alapertelmezes) vagy 'kiadasonkent-leptet' (a szam csak kiadaskor lep, tobb egymast koveto commit hordozhatja ugyanazt). Ez a repobol nem szarmaztathato -- mereni kell. EGYETLEN forras: mind a buildszam-utkozes-kapu.sh (tortenet-audit), mind a build-number-commit-gate.mjs (PreToolUse hard-gate) ezt a fajlt olvassa, hogy ne mondjanak egymasnak ellent.",
   "_en": "Which repo follows which build-number convention: 'minden-commit-leptet' (the number bumps on EVERY commit, the default) or 'kiadasonkent-leptet' (the number bumps only per release; several consecutive commits may carry the same value). Not derivable from the repo alone -- must be measured. SINGLE source: both buildszam-utkozes-kapu.sh (history audit) and build-number-commit-gate.mjs (PreToolUse hard-gate) read this file so they cannot disagree.",
+  "_kivetel": "2026-08-28 (Marveen dontes, kartya-komment 3871, 1. pont): a korabbi JokerQ-SDK kivetel torolve. Mert arany (ordog, komment 3861, 4. lelet): JokerQ-SDK, JokerQ, QuantumAE mindharom repo commitjainak kb fele leptet -- egyik repot sem tunteti ki a tortenet. Ha az SDK-vonal valoban mas konvenciot kovetne, az kulon, dokumentalt, indokolt donteskent johet vissza, nem alapertelmezeskent.",
   "defaultConvention": "minden-commit-leptet",
-  "overrides": [
-    {
-      "_mert": "avalonia, 2026-08-14: az utolso 8 commit mind az 53-at hordozza -- ujramerve 2026-08-27: valtozatlan.",
-      "repoPathPattern": "JokerQ-SDK$",
-      "convention": "kiadasonkent-leptet"
-    }
-  ]
+  "overrides": []
 }

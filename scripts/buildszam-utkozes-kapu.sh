@@ -558,6 +558,24 @@ import sys
 
 KKnownConventions = ("minden-commit-leptet", "kiadasonkent-leptet")
 
+# Mirrors usesOnlyCommonRegexSubset() in build-number-commit-gate.mjs --
+# SAME blocklist, same reasoning: python `re` and JS RegExp accept some
+# constructs that mean something DIFFERENT on the other side without either
+# side erroring (card #1085 point B / Marveen decision 3871 point 2). Keep
+# the two lists in sync by hand; there is no shared runtime between a .mjs
+# and a python heredoc to import from.
+KDivergentConstructs = (
+    re.compile(r"\(\?(?!:)"),   # any special group other than (?:...)
+    re.compile(r"[*+?}]\+"),    # possessive quantifier -- python 3.11+ only
+    re.compile(r"\\k<"),        # named backreference (JS \k<name> syntax)
+    re.compile(r"\\[AZ]"),      # python-only \A/\Z -- JS reads them as "A"/"Z" literally
+    re.compile(r"\\[pP]\{"),    # unicode property escape
+)
+
+
+def uses_only_common_regex_subset(pattern):
+    return not any(rx.search(pattern) for rx in KDivergentConstructs)
+
 
 def resolve():
     repo = os.environ["BSZ_REPO_FOR_CONV"].replace("\\", "/")
@@ -581,6 +599,8 @@ def resolve():
         if not isinstance(pattern, str) or not pattern:
             continue
         if convention not in KKnownConventions:
+            continue
+        if not uses_only_common_regex_subset(pattern):
             continue
         try:
             matched = re.search(pattern, repo)

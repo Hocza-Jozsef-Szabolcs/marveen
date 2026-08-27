@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision } from '../../scripts/build-number-commit-gate.mjs'
+import { gateDecision, usesOnlyCommonRegexSubset } from '../../scripts/build-number-commit-gate.mjs'
 import { injectBuildNumberGate } from '../web/agent-scaffold.js'
 
 // Governance control (Józsi, 2026-08-15, VHR5 7.4.1.61): four developer commits
@@ -299,9 +299,14 @@ describe('build-number-commit-gate gateDecision', () => {
     })
 
     // Exercises the SHIPPED scripts/build-number-conventions.json (no env
-    // override) against the real, measured JokerQ-SDK case -- the path
-    // suffix is what the shipped override matches on.
-    it('applies the shipped kiadasonkent-leptet override for JokerQ-SDK (real measured case)', () => {
+    // override) against the real JokerQ-SDK path. Decision (Marveen, kanban
+    // comment 3871, point 1): the earlier kiadasonkent-leptet override for
+    // JokerQ-SDK is REMOVED -- the measured commit history (ordog, comment
+    // 3861, finding 4) showed JokerQ-SDK, JokerQ and QuantumAE all bump on
+    // roughly half their commits, no repo distinguished from the others, so
+    // there was no measured basis for singling SDK out. It now follows the
+    // same default (minden-commit-leptet) as every other repo.
+    it('has NO shipped override for JokerQ-SDK anymore -- it follows the default like every other repo', () => {
       const base = mkdtempSync(join(tmpdir(), 'buildnum-gate-sdk-'))
       const dir = join(base, 'QCassa.com', 'JokerQ-SDK')
       try {
@@ -318,11 +323,59 @@ describe('build-number-commit-gate gateDecision', () => {
         execFileSync('git', ['add', 'Foo.cs'], { cwd: dir })
         withConventionsPath(undefined, () => {
           const result = gateDecision('Bash', { command: 'git commit -m "fix: x"' }, dir)
-          expect(result.deny).toBe(false)
+          expect(result.deny).toBe(true)
         })
       } finally {
         rmSync(base, { recursive: true, force: true })
       }
+    })
+
+    // Independent review, second round (ordog, comment 3861, finding 3 / card
+    // #1085 point B): python `re` and JS RegExp are not the same grammar.
+    // `(?P<x>...)` is a Python named group; JS has never seen that syntax and
+    // treats it as an invalid group (crash, caught, skipped -- fine). But
+    // `(?<x>...)` is the MIRROR case: valid JS named-group syntax that
+    // Python's `re` rejects. Before the fix, JS would happily compile and
+    // MATCH with it while python skipped -- no crash on either side, just an
+    // opposite decision on the SAME rule. Both must now skip it identically.
+    describe('regex-grammar divergence between python re and JS RegExp', () => {
+      it.each([
+        ['(?P<x>JokerQ)', 'python named group -- invalid JS syntax'],
+        ['(?<x>JokerQ)', 'JS named group -- invalid python syntax'],
+        ['(?<=JokerQ)', 'lookbehind -- fixed/variable-width split between engines'],
+        ['Jok\\Zer', 'python \\Z anchor -- JS reads it as a literal "Z"'],
+        ['Jok\\k<x>Q', 'named backreference syntax'],
+        ['Jok\\p{L}Q', 'unicode property escape'],
+        ['Joker++Q', 'possessive quantifier -- python 3.11+ only'],
+      ])('rejects %s (%s) as outside the common subset', (pattern) => {
+        expect(usesOnlyCommonRegexSubset(pattern)).toBe(false)
+      })
+
+      it('accepts the two SHIPPED patterns (plain literals/escapes/anchor, no special groups)', () => {
+        expect(usesOnlyCommonRegexSubset('JokerQ-SDK$')).toBe(true)
+        expect(usesOnlyCommonRegexSubset('VHR ?5\\/Delphi\\/Projects\\/VHR5$')).toBe(true)
+      })
+
+      it('an override using JS-only named-group syntax is skipped, not matched (was a silent divergence)', () => {
+        const dir = makeRepo()
+        try {
+          const cfgPath = join(dir, 'conventions.json')
+          writeFileSync(cfgPath, JSON.stringify({
+            defaultConvention: 'minden-commit-leptet',
+            overrides: [{ repoPathPattern: `(?<x>${dir.replace(/\\/g, '/')})`, convention: 'kiadasonkent-leptet' }],
+          }))
+          writeFileSync(join(dir, 'Foo.cs'), 'class Foo { void Bar() {} }\n')
+          execFileSync('git', ['add', 'Foo.cs'], { cwd: dir })
+          withConventionsPath(cfgPath, () => {
+            const result = gateDecision('Bash', { command: 'git commit -m "feat: x"' }, dir)
+            // Before the fix this was `deny: false` (JS matched the named
+            // group and applied kiadasonkent-leptet); must now enforce.
+            expect(result.deny).toBe(true)
+          })
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      })
     })
   })
 
@@ -349,6 +402,180 @@ describe('build-number-commit-gate gateDecision', () => {
       }
     } finally {
       rmSync(base, { recursive: true, force: true })
+    }
+  })
+})
+
+// Coverage measurement (buildszam-utkozes-kapu card #1085, backend, comment
+// 3870/3871): ALL 46 measured agent-attributed no-bump commits on JokerQ/
+// QuantumAE main since the hook went live were reachable from a feature
+// branch -- committed while HEAD was NOT the release branch, then landed on
+// main via `git merge` in a worktree's main checkout. The commit-time check
+// above never sees that: releaseBranches.includes(branch) is false on a
+// feature branch, so the gate correctly does not fire there -- but nothing
+// ever re-checks the number at the moment those commits actually reach the
+// release branch. Marveen (comment 3871, point 3): "a leggyakoribb utat nem
+// latja, strukturalisan lyukas" -- extend the gate to the landing moment too.
+describe('build-number-commit-gate gateDecision -- merge landing on a release branch', () => {
+  function bumpOnBranch(dir: string, branch: string, value: string): void {
+    execFileSync('git', ['checkout', '-q', '-b', branch], { cwd: dir })
+    writeFileSync(join(dir, 'BuildNumberV2.txt'), `${value}\n`)
+    execFileSync('git', ['add', 'BuildNumberV2.txt'], { cwd: dir })
+    execFileSync('git', ['commit', '-q', '-m', `build: ${value}`], { cwd: dir })
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: dir })
+  }
+
+  it('denies a merge into a release branch when the incoming ref does NOT carry a higher build number', () => {
+    const dir = makeRepo() // main is at BuildNumberV2.txt=1
+    try {
+      execFileSync('git', ['checkout', '-q', '-b', 'feature/x'], { cwd: dir })
+      writeFileSync(join(dir, 'Foo.cs'), 'class Foo { void Bar() {} }\n')
+      execFileSync('git', ['add', 'Foo.cs'], { cwd: dir })
+      execFileSync('git', ['commit', '-q', '-m', 'feat: x'], { cwd: dir }) // never bumped -- still 1
+      execFileSync('git', ['checkout', '-q', 'main'], { cwd: dir })
+      const result = gateDecision('Bash', { command: 'git merge feature/x' }, dir)
+      expect(result.deny).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a merge into a release branch when the incoming ref carries a higher build number', () => {
+    const dir = makeRepo() // main is at BuildNumberV2.txt=1
+    try {
+      bumpOnBranch(dir, 'feature/x', '2')
+      const result = gateDecision('Bash', { command: 'git merge feature/x' }, dir)
+      expect(result.deny).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a merge into a release branch when the incoming ref carries an EQUAL build number (duplicate identifier)', () => {
+    // Same numeric text as main's current tip, reached via an independent
+    // branch -- exactly the duplicate-identifier shape the whole card exists
+    // to prevent, so this must deny, not just "not-strictly-lower".
+    const dir = makeRepo() // main is at BuildNumberV2.txt=1
+    try {
+      execFileSync('git', ['checkout', '-q', '-b', 'feature/x'], { cwd: dir })
+      writeFileSync(join(dir, 'BuildNumberV2.txt'), '1\n')
+      writeFileSync(join(dir, 'Foo.cs'), 'class Foo { void Bar() {} }\n')
+      execFileSync('git', ['add', '-A'], { cwd: dir })
+      execFileSync('git', ['commit', '-q', '-m', 'feat: x'], { cwd: dir })
+      execFileSync('git', ['checkout', '-q', 'main'], { cwd: dir })
+      const result = gateDecision('Bash', { command: 'git merge feature/x' }, dir)
+      expect(result.deny).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a merge on a NON-release branch regardless of the incoming build number', () => {
+    const dir = makeRepo()
+    try {
+      execFileSync('git', ['checkout', '-q', '-b', 'other-base'], { cwd: dir })
+      execFileSync('git', ['checkout', '-q', '-b', 'feature/x'], { cwd: dir })
+      writeFileSync(join(dir, 'Foo.cs'), 'class Foo { void Bar() {} }\n')
+      execFileSync('git', ['add', 'Foo.cs'], { cwd: dir })
+      execFileSync('git', ['commit', '-q', '-m', 'feat: x'], { cwd: dir }) // never bumped, same as other-base
+      execFileSync('git', ['checkout', '-q', 'other-base'], { cwd: dir })
+      const result = gateDecision('Bash', { command: 'git merge feature/x' }, dir)
+      expect(result.deny).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not require a ref for git merge --abort / --continue / --quit', () => {
+    const dir = makeRepo()
+    try {
+      expect(gateDecision('Bash', { command: 'git merge --abort' }, dir).deny).toBe(false)
+      expect(gateDecision('Bash', { command: 'git merge --continue' }, dir).deny).toBe(false)
+      expect(gateDecision('Bash', { command: 'git merge --quit' }, dir).deny).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('finds the incoming ref past --no-ff and a quoted -m message', () => {
+    const dir = makeRepo() // main is at BuildNumberV2.txt=1
+    try {
+      execFileSync('git', ['checkout', '-q', '-b', 'feature/x'], { cwd: dir })
+      writeFileSync(join(dir, 'Foo.cs'), 'class Foo { void Bar() {} }\n')
+      execFileSync('git', ['add', 'Foo.cs'], { cwd: dir })
+      execFileSync('git', ['commit', '-q', '-m', 'feat: x'], { cwd: dir }) // never bumped -- still 1
+      execFileSync('git', ['checkout', '-q', 'main'], { cwd: dir })
+      const result = gateDecision(
+        'Bash',
+        { command: 'git merge --no-ff -m "Merge branch feature/x" feature/x' },
+        dir,
+      )
+      expect(result.deny).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('denies when the incoming ref has no BuildNumberV2.txt at all (fail-closed, not a false allow)', () => {
+    const dir = makeRepo()
+    try {
+      execFileSync('git', ['checkout', '-q', '-b', 'feature/x'], { cwd: dir })
+      execFileSync('git', ['rm', '-q', 'BuildNumberV2.txt'], { cwd: dir })
+      execFileSync('git', ['commit', '-q', '-m', 'chore: drop file'], { cwd: dir })
+      execFileSync('git', ['checkout', '-q', 'main'], { cwd: dir })
+      const result = gateDecision('Bash', { command: 'git merge feature/x' }, dir)
+      expect(result.deny).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('respects the kiadasonkent-leptet convention for merges too (same shared config)', () => {
+    const dir = makeRepo() // main is at BuildNumberV2.txt=1
+    try {
+      const cfgPath = join(dir, 'conventions.json')
+      writeFileSync(cfgPath, JSON.stringify({
+        defaultConvention: 'minden-commit-leptet',
+        overrides: [{ repoPathPattern: dir.replace(/\\/g, '/'), convention: 'kiadasonkent-leptet' }],
+      }))
+      execFileSync('git', ['checkout', '-q', '-b', 'feature/x'], { cwd: dir })
+      writeFileSync(join(dir, 'Foo.cs'), 'class Foo { void Bar() {} }\n')
+      execFileSync('git', ['add', 'Foo.cs'], { cwd: dir })
+      execFileSync('git', ['commit', '-q', '-m', 'feat: x'], { cwd: dir }) // never bumped -- still 1
+      execFileSync('git', ['checkout', '-q', 'main'], { cwd: dir })
+      const original = process.env.BUILD_NUMBER_CONVENTIONS_PATH
+      process.env.BUILD_NUMBER_CONVENTIONS_PATH = cfgPath
+      try {
+        const result = gateDecision('Bash', { command: 'git merge feature/x' }, dir)
+        expect(result.deny).toBe(false)
+      } finally {
+        if (original === undefined) delete process.env.BUILD_NUMBER_CONVENTIONS_PATH
+        else process.env.BUILD_NUMBER_CONVENTIONS_PATH = original
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('is inert on merge in a repo that does not use BuildNumberV2.txt at all', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'buildnum-gate-nosch-merge-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: dir })
+      execFileSync('git', ['config', 'user.email', 'a@a.hu'], { cwd: dir })
+      execFileSync('git', ['config', 'user.name', 'a'], { cwd: dir })
+      writeFileSync(join(dir, 'f.txt'), 'x\n')
+      execFileSync('git', ['add', '-A'], { cwd: dir })
+      execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir })
+      execFileSync('git', ['branch', '-M', 'main'], { cwd: dir })
+      execFileSync('git', ['checkout', '-q', '-b', 'feature/x'], { cwd: dir })
+      writeFileSync(join(dir, 'f.txt'), 'y\n')
+      execFileSync('git', ['add', 'f.txt'], { cwd: dir })
+      execFileSync('git', ['commit', '-q', '-m', 'feat: x'], { cwd: dir })
+      execFileSync('git', ['checkout', '-q', 'main'], { cwd: dir })
+      const result = gateDecision('Bash', { command: 'git merge feature/x' }, dir)
+      expect(result.deny).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

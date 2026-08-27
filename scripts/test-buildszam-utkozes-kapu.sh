@@ -728,6 +728,81 @@ else
   echo "  ⚠️  T16g KIHAGYVA -- nincs node a PATH-on"
 fi
 
+# T16h/i: FUGGETLEN ATMERES, MASODIK KOR (ordog, kartya-komment 3861, 3. lelet / kartya #1085,
+#         B pont; Marveen dontes 3871, 2. pont) -- python `re` es JS RegExp NEM ugyanaz a nyelvtan.
+#         `(?<x>...)` ERVENYES JS nevesitett-csoport szintaxis, de a pythonnak NINCS ilyen alakja
+#         (csak `(?P<x>...)` -- `re.error`-t dob). A HIBA ELoTT ez CSENDES szetcsuszast okozott: a
+#         node oldal LEFORDITOTTA es ILLESZKEDETT ra (ALLOW/kiadasonkent-leptet), a bash oldal
+#         KIVETELT kapott es KIHAGYTA (DENY/minden-commit-leptet) -- nem crash egyik oldalon sem,
+#         csak ELLENTETES dontes UGYANARRA a szabalyra. A ketoldali validator (uses_only_common_
+#         regex_subset / usesOnlyCommonRegexSubset) most MINDKET oldalon KIHAGYJA -- a szabaly nem
+#         alkalmazhato, a default (minden-commit-leptet) ervenyesul mindket oldalon.
+echo
+echo "T16h/i -- fuggetlen atmeres, 2. kor: regex-nyelvtan elteres (?<x>...) mindket oldalon kihagyva"
+
+FNamedGroupReal="$FTmp/t16-named-group-real.json"
+cat > "$FNamedGroupReal" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"repoPathPattern": "(?<x>$(printf '%s' "$RReal" | sed 's/[\\/&]/\\\\&/g'))", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+
+OUT=$(BSZ_CONVENTIONS_PATH="$FNamedGroupReal" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): minden-commit-leptet"; then
+  echo "  ✅ T16h bash oldal: (?<x>...) KIHAGYVA, a defaultConvention ervenyesul"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16h bash oldal a (?<x>...) szabalyt hibasan alkalmazta (nem esett vissza a defaultra)"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+if command -v node >/dev/null 2>&1; then
+  echo "class Z {}" > "$R/Src3.cs"
+  gitq "$R" add Src3.cs
+  NODE_OUT=$(cd "$R" && BUILD_NUMBER_CONVENTIONS_PATH="$FNamedGroupReal" node -e '
+    import("'"$CScriptDirForNode"'/build-number-commit-gate.mjs").then(({ gateDecision }) => {
+      const r = gateDecision("Bash", { command: "git commit -m x" }, process.cwd())
+      console.log(r.deny ? "DENY" : "ALLOW")
+    })
+  ' 2>&1)
+  if echo "$NODE_OUT" | grep -q "^DENY$"; then
+    echo "  ✅ T16i node oldal: (?<x>...) UGYANUGY kihagyva -- DENY (a ket oldal MOST egyet ert)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T16i node oldal LEFORDITOTTA es ILLESZKEDETT a (?<x>...) mintara -- a ket oldal szetcsuszott"
+    FFail=$((FFail + 1)); echo "$NODE_OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T16i KIHAGYVA -- nincs node a PATH-on"
+fi
+
+# T16j: MUTACIO -- a ketoldali validator NELKUL a T16h/i-nek buknia kell (a bash oldal is
+#       KIVETELT kapna a (?<x>...)-en, ami korabban ugyan szinten skip-hez vezetett a legkulso
+#       except-tel -- de a mutacio itt a NODE oldalt teszi vakka: uses_only_common_regex_subset
+#       nelkul a JS oldal LEFORDITANA es ILLESZKEDNE, ami T16i-t PIROSRA valtja).
+echo
+echo "T16j -- MUTACIO: usesOnlyCommonRegexSubset nelkul a node oldal (T16i) visszaesik"
+if command -v node >/dev/null 2>&1; then
+  NODE_OUT=$(cd "$R" && BUILD_NUMBER_CONVENTIONS_PATH="$FNamedGroupReal" node -e '
+    import("'"$CScriptDirForNode"'/build-number-commit-gate.mjs").then(({ gateDecision }) => {
+      // Mutans: a validator nelkuli regi viselkedes szimulalasa -- kozvetlenul a RegExp-et hasznaljuk.
+      const fs = require("node:fs")
+      const cfg = JSON.parse(fs.readFileSync(process.env.BUILD_NUMBER_CONVENTIONS_PATH, "utf-8"))
+      const norm = process.cwd().replace(/\\/g, "/")
+      const rule = cfg.overrides[0]
+      const matched = new RegExp(rule.repoPathPattern).test(norm)
+      console.log(matched ? "MATCHED-WITHOUT-VALIDATOR" : "NOT-MATCHED")
+    })
+  ' 2>&1)
+  if echo "$NODE_OUT" | grep -q "^MATCHED-WITHOUT-VALIDATOR$"; then
+    echo "  ✅ T16j igazolva: validator nelkul a JS oldal ILLESZKEDNE -- a T16i zoldje a validatoron mulik"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T16j a mutacio nem fogott -- a (?<x>...) validator nelkul sem illeszkedne, T16i nem bizonyit semmit"
+    FFail=$((FFail + 1)); echo "$NODE_OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T16j KIHAGYVA -- nincs node a PATH-on"
+fi
+
 # ── Osszegzes ─────────────────────────────────────────────────────────────────
 echo
 echo "EREDMENY: $FPass rendben | $FFail elter"
