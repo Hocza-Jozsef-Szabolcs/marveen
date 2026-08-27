@@ -23,6 +23,12 @@
 #
 # A KAPU SEMMIT NEM JAVIT ES NEM IR AT -- csak jelent. A tortenet valtozatlan marad.
 #
+# 🛑 A KAPU MONDJA KI, MELYIK KONVENCIOT FELTETELEZI (avalonia merese, JokerQ-SDK, 2026-08-14):
+#    egy repo vagy MINDEN commiton lepteti a szamot, vagy csak KIADASONKENT -- ez a repobol nem
+#    szarmaztathato, repo-szinten kapcsolhato a `scripts/build-number-conventions.json`-ban. EZT A
+#    KONVENCIOT OLVASSA A build-number-commit-gate.mjs (PreToolUse hard-gate) IS -- egy kozos fajl,
+#    kulonben a hook ott is leptetest kenyszeritene, ahol ez a mero szerint nem is kell.
+#
 # en: BUILD NUMBER COLLISION GATE -- pre-commit check that also measures ACROSS worktrees.
 #     It does NOT forbid a repeated value (that is a number's normal lifetime between bumps); it
 #     forbids a RETURNING value. Two detectors are needed because they measure different things and
@@ -56,7 +62,16 @@
 
 set -uo pipefail
 
+CScriptDir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 CBuildFile="BuildNumberV2.txt"
+# hu: A KONVENCIO-KAPCSOLO KOZOS FORRASA A build-number-commit-gate.mjs-szel (marveen, kartya-komment
+#     1928): az a hook MINDEN release-agi commitnal megkoveteli a fajl staged-jelenletet -- ha egy
+#     repo valojaban csak KIADASONKENT lep (JokerQ-SDK, avalonia merese: az utolso 8 commit mind
+#     53-at hordozza), a hook ott kikenyszeriti a leptetest, ahol a mero szerint nem is kell. EGY
+#     kozos JSON-t olvas mindket oldal, kulonben szetcsuszhatnak. `BSZ_CONVENTIONS_PATH` teszteknek.
+# en: SHARED source for the convention switch with build-number-commit-gate.mjs -- see there. One
+#     JSON file read by both sides so they cannot disagree on which repos are release-only bumpers.
+CConventionsPath="${BSZ_CONVENTIONS_PATH:-$CScriptDir/build-number-conventions.json}"
 # hu: 0 = NINCS MELYSEG-KORLAT (a teljes tortenet). Lasd a fejlec „a melyseg nem szukithet" reszet.
 # en: 0 = NO depth limit (walk the whole history).
 CDefaultLimit=0
@@ -516,6 +531,77 @@ PYEOF
   return $rc
 }
 
+# hu: EGY repo build-szam-konvencioja -- lasd a fejlecben a CConventionsPath megjegyzeset. Az elso
+#     illeszkedo override nyer, kulonben az alapertelmezes. Olvasatlan/hianyzo config eseten
+#     "minden-commit-leptet"-et ad (a mai, mar ervenyben levo viselkedes -- a hiba NEM tagithatja a
+#     kapu hatokoret).
+#
+# 🛑 FUGGETLEN ATMERES (ordog, kartya-komment 3861) HAROM fail-open alakot talalt, MINDHAROM ITT
+#    JAVITVA: (1) hianyzo repoPathPattern -> Python `re.search(None, ...)` TypeErrort dobott,
+#    amit a bash-hivo URES konvencio-ertekkent latott -- a build-number-commit-gate.mjs oldalan
+#    ugyanez `new RegExp(undefined)` = /(?:)/, ami MINDENRE illeszkedik, tehat a KET OLDAL nemcsak
+#    hibazott, hanem MASKEPP hibazott. (2) ervenytelen regex -- ugyanigy csupasz kivetel volt.
+#    (3) EZERT a validacio itt UGYANAZT a szabalyt koveti, mint a .mjs oldalon: minden mezot
+#    tipus/ertek szerint ellenoriz HASZNALAT ELoTT, es egy hibas szabalyt KIHAGY (nem match-all,
+#    nem crash) -- igy a ket oldal UGYANARRA a torott configra UGYANAZT a dontest hozza.
+# en: A repo's build-number convention -- unreadable/missing config falls back to the
+#     already-enforced default, so a broken config cannot widen the gate. Every rule field is
+#     validated before use and an invalid rule is SKIPPED, matching build-number-commit-gate.mjs's
+#     validation exactly so the two sides cannot diverge on the same malformed config.
+convention_for() {
+  local repo="$1"
+  BSZ_REPO_FOR_CONV="$repo" BSZ_CONV_PATH="$CConventionsPath" python3 - <<'PYEOF'
+import json
+import os
+import re
+import sys
+
+KKnownConventions = ("minden-commit-leptet", "kiadasonkent-leptet")
+
+
+def resolve():
+    repo = os.environ["BSZ_REPO_FOR_CONV"].replace("\\", "/")
+    path = os.environ["BSZ_CONV_PATH"]
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return "minden-commit-leptet"
+
+    overrides = cfg.get("overrides", [])
+    if not isinstance(overrides, list):
+        overrides = []
+
+    for rule in overrides:
+        if not isinstance(rule, dict):
+            continue
+        pattern = rule.get("repoPathPattern")
+        convention = rule.get("convention")
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        if convention not in KKnownConventions:
+            continue
+        try:
+            matched = re.search(pattern, repo)
+        except re.error:
+            continue
+        if matched:
+            return convention
+
+    default = cfg.get("defaultConvention")
+    return default if default in KKnownConventions else "minden-commit-leptet"
+
+
+try:
+    print(resolve())
+except Exception:
+    # Utolso vedovonal -- barmilyen elo nem latott hiba is a mai, mar ervenyben levo
+    # viselkedesre esik vissza, nem crashel es nem hagy URES erteket.
+    print("minden-commit-leptet")
+PYEOF
+}
+
 # ── Futtatas ──────────────────────────────────────────────────────────────────
 # hu: A "NEM HASZNAL BUILD-SZAMOT" ES A "VAK MERES" KET KULONBOZo ALLAPOT, ES UGYANUGY NEZNEK KI:
 #     mindketto NULLA kiolvasott erteket ad. Ha nem valasztjuk szet, a kapu MINDEN build-szam
@@ -539,6 +625,7 @@ for repo in "${FRepos[@]}"; do
   fi
 
   FCheckedRepos=$((FCheckedRepos + 1))
+  echo "  KONVENCIO ($repo): $(convention_for "$repo")"
 
   check_worktrees "$repo" || FFindings=$((FFindings + 1))
   check_history   "$repo" || FFindings=$((FFindings + 1))

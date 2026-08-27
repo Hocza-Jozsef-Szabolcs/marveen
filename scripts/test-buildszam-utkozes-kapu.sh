@@ -14,7 +14,8 @@
 
 set -uo pipefail
 
-CGate="$(cd "$(dirname "$0")" && pwd)/buildszam-utkozes-kapu.sh"
+CScriptDirForNode="$(cd "$(dirname "$0")" && pwd)"
+CGate="$CScriptDirForNode/buildszam-utkozes-kapu.sh"
 CRealRepo="$HOME/Source/github.com/QCassa.com/QuantumAE"
 
 FTmp=$(mktemp -d "${TMPDIR:-/tmp}/buildszam-kapu-teszt.XXXXXX")
@@ -562,6 +563,169 @@ if [ -d "$CRealRepo/.git" ]; then
 else
   echo "  ⚠️  T7 KIHAGYVA -- a QuantumAE repo nincs a helyen: $CRealRepo"
   echo "     (ez NEM zold: a valos eset merese elmaradt)"
+fi
+
+# ── T16: KONVENCIO-JELENTES -- KOZOS CONFIG A build-number-commit-gate.mjs-SZEL ──
+# hu: Kartya-komment 1928 (marveen): a kapu mondja ki, MELYIK konvenciot feltetelezi, es repo-szinten
+#     legyen kapcsolhato -- KOZOS forrasbol a build-number-commit-gate.mjs-szel, kulonben a hook ott
+#     is leptetest kenyszeritene, ahol ez a mero szerint nem is kell.
+echo
+echo "T16 -- konvencio-jelentes, kozos config a build-number-commit-gate.mjs-szel"
+
+R=$(new_repo t16 300)
+# hu: FELOLDOTT (symlink-mentes) utvonal -- a `git rev-parse --show-toplevel` (amit a node-os T16d
+#     a `gateDecision`-on keresztul hasznal) a VALODI utvonalat adja vissza, a bash oldal viszont a
+#     nyers --repo argumentumot illeszti. Feloldas nelkul a ket oldal MAS stringen mérne (pl. macOS
+#     /tmp -> /private/tmp), es T16d hamisan buktatna -- nem a kapun, hanem a teszt sajat utvonalan.
+#     A `gitq` fail-closed ore viszont a NYERS $R-re (FTmp-prefixre) van huzva, ezert a git-hivasok
+#     tovabbra is $R-t hasznaljak -- csak a config-mintat es a node-hivast erinti a feloldas.
+RReal=$(cd "$R" && pwd -P)
+
+# T16a: alapertelmezes -- a repo nem illeszkedik egyik override-ra sem.
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): minden-commit-leptet"; then
+  echo "  ✅ T16a alapertelmezett konvencio kiirva (minden-commit-leptet)"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16a nincs (vagy hibas) KONVENCIO sor az alapertelmezett configgal"; FFail=$((FFail + 1))
+  echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T16b: SAJAT config, override a repora -- a kapcsolo tenyleg olvashato kivulrol.
+FCustomConv="$FTmp/t16-conventions.json"
+cat > "$FCustomConv" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"repoPathPattern": "$(printf '%s' "$R" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+OUT=$(BSZ_CONVENTIONS_PATH="$FCustomConv" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): kiadasonkent-leptet"; then
+  echo "  ✅ T16b egyedi config override-ja atveve (kiadasonkent-leptet)"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16b az egyedi config override-ja NEM ervenyesult"; FFail=$((FFail + 1))
+  echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T16c: A SAJAT config OLVASHATATLAN -- fail-safe, a mai (mar ervenyben levo) konvenciora esik
+#       vissza, NEM ad hibat es NEM tagitja a hatokort.
+OUT=$(BSZ_CONVENTIONS_PATH="$FTmp/nincs-ilyen-fajl.json" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): minden-commit-leptet"; then
+  echo "  ✅ T16c olvashatatlan config -> fail-safe alapertelmezes"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16c olvashatatlan config eseten NEM a fail-safe alapertelmezes jott ki"; FFail=$((FFail + 1))
+  echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T16d: UGYANAZ a config, a MASIK kapu (build-number-commit-gate.mjs) IS ugyanazt a dontest hozza --
+#       a ket mechanizmus nem csuszhat szet. Nem-release agon a hook amugy sem tiltana, ezert
+#       a "main"-en, staged forrassal, BuildNumberV2.txt NELKUL merunk: minden-commit-leptet alatt
+#       ez TILTVA lenne, kiadasonkent-leptet alatt ENGEDVE.
+#       A .mjs a `git rev-parse --show-toplevel`-lel szamitja a repoRoot-ot, ami FELOLDJA a
+#       symlinkeket -- ezert a mintat $RReal-re epitjuk, nem a nyers $R-re (FCustomConv az).
+FCustomConvReal="$FTmp/t16-conventions-real.json"
+cat > "$FCustomConvReal" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"repoPathPattern": "$(printf '%s' "$RReal" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+if command -v node >/dev/null 2>&1; then
+  echo "class X {}" > "$R/Src.cs"
+  gitq "$R" add Src.cs
+  NODE_OUT=$(cd "$R" && BUILD_NUMBER_CONVENTIONS_PATH="$FCustomConvReal" node -e '
+    import("'"$CScriptDirForNode"'/build-number-commit-gate.mjs").then(({ gateDecision }) => {
+      const r = gateDecision("Bash", { command: "git commit -m x" }, process.cwd())
+      console.log(r.deny ? "DENY" : "ALLOW")
+    })
+  ' 2>&1)
+  if echo "$NODE_OUT" | grep -q "^ALLOW$"; then
+    echo "  ✅ T16d a masik kapu (build-number-commit-gate.mjs) UGYANAZT a configot koveti (ALLOW)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T16d a ket kapu szetcsuszott -- a .mjs nem ALLOW-ot adott ugyanarra a configra"
+    FFail=$((FFail + 1))
+    echo "$NODE_OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T16d KIHAGYVA -- nincs node a PATH-on"
+fi
+
+# T16e/f/g: FUGGETLEN ATMERES (ordog, kartya-komment 3861) -- HAROM fail-open a config-olvasasban.
+#   1. hianyzo repoPathPattern -> a regex NEM illeszkedhet MINDENRE (a Python `re.search(None, ..)`
+#      TypeErrort dob, ami a bash oldalon URES ertekkent latszott -- itt annak kell latszania, hogy a
+#      szabaly KIMARAD, es a config tobbi resze (defaultConvention) ervenyesul).
+#   2. ervenytelen regex -- nem eshet ki csendben URES ertekkel.
+#   3. A KET OLDAL (bash/python es node/JS) UGYANARRA a torott configra UGYANAZT a dontest hozza --
+#      a regex-nyelvtan eltéreseik ellenere is, mert a validacio a hasznalat ELOTT szuri ki oket.
+echo
+echo "T16e/f/g -- fuggetlen atmeres: fail-open a config-olvasasban (ordog, 3861)"
+
+# 🛑 A TORT SZABALY konvencioja SZANDEKOSAN egyezik a defaultConvention-nel, a MASODIK, ervenyes
+#    szabalye pedig a MASIK ertek -- ez az, ami megkulonbozteti a "kihagyja a torott szabalyt, es
+#    tovabb keres" viselkedest MINDKET ismert hibatol: (1) a torott szabaly hamisan mindenre
+#    illeszkedik es a SAJAT (=default-dal azonos) konvenciojat adja vissza, (2) egy kivetel a
+#    torott szabalynal a legfelso fail-safe-re esik (SZINTEN a default-ot adja) -- MIELoTT a
+#    masodik szabaly egyaltalan sorra kerulne. Csak a helyes viselkedes jut el a masodik szabalyig,
+#    es CSAK az ad "kiadasonkent-leptet"-et.
+FBrokenPattern="$FTmp/t16-broken-pattern.json"
+cat > "$FBrokenPattern" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"convention": "minden-commit-leptet"},
+               {"repoPathPattern": "$(printf '%s' "$R" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+OUT=$(BSZ_CONVENTIONS_PATH="$FBrokenPattern" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): kiadasonkent-leptet"; then
+  echo "  ✅ T16e hianyzo repoPathPattern -> KIMARAD, a KESoBBI ervenyes szabaly ervenyesul"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16e hianyzo repoPathPattern eseten a szabaly nem a vart modon maradt ki"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+FInvalidRegex="$FTmp/t16-invalid-regex.json"
+cat > "$FInvalidRegex" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"repoPathPattern": "(", "convention": "minden-commit-leptet"},
+               {"repoPathPattern": "$(printf '%s' "$R" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+OUT=$(BSZ_CONVENTIONS_PATH="$FInvalidRegex" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): kiadasonkent-leptet"; then
+  echo "  ✅ T16f ervenytelen regex -> KIHAGYVA, a KESoBBI ervenyes szabaly ervenyesul"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16f ervenytelen regex eseten a szabaly nem a vart modon maradt ki"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T16g: a KET OLDAL ugyanarra a hianyos configra UGYANAZT donti -- a node-os oldal ne dobjon,
+#       es NE tekintse a hianyzo mintat mindenre-illeszkedonek.
+#       🛑 ordog masodik atmerese (kartya-komment 3865): a FBrokenPattern (nyers $R, a TMPDIR zaro
+#       perjele miatt DUPLA perjelet visel) SOSEM illeszkedik a node oldal FELOLDOTT ($RReal
+#       -alapu) utvonalara -- a "kesobbi ervenyes szabaly" ag itt SOHA nem futott le, es a torott
+#       szabaly sajat konvencioja (minden-commit-leptet) EGYBEESETT a defaulttal, ezert a teszt vak
+#       volt a sajat targyara: a tipus-ellenorzes visszavetele (a mutans) IS ugyanazt a DENY-t adta.
+#       Javitva: a mintat $RReal-re epitjuk (ugyanarra, amit a .mjs a `git rev-parse
+#       --show-toplevel`-lel szamit), es a VART EREDMENY ALLOW -- ezt CSAK a "kihagyja a torott
+#       szabalyt, tovabb keres a masodikra" viselkedes adja, a match-all hiba nem (az a rule1 SAJAT,
+#       default-dal azonos konvenciojara esne, ami DENY maradna).
+if command -v node >/dev/null 2>&1; then
+  FBrokenPatternReal="$FTmp/t16-broken-pattern-real.json"
+  cat > "$FBrokenPatternReal" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"convention": "minden-commit-leptet"},
+               {"repoPathPattern": "$(printf '%s' "$RReal" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+  echo "class Y {}" > "$R/Src2.cs"
+  gitq "$R" add Src2.cs
+  NODE_OUT=$(cd "$R" && BUILD_NUMBER_CONVENTIONS_PATH="$FBrokenPatternReal" node -e '
+    import("'"$CScriptDirForNode"'/build-number-commit-gate.mjs").then(({ gateDecision }) => {
+      const r = gateDecision("Bash", { command: "git commit -m x" }, process.cwd())
+      console.log(r.deny ? "DENY" : "ALLOW")
+    })
+  ' 2>&1)
+  if echo "$NODE_OUT" | grep -q "^ALLOW$"; then
+    echo "  ✅ T16g a hianyos elso szabaly KIMARAD, a masodik (RReal-re illeszkedo) ervenyesul (ALLOW)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T16g a masik kapu (.mjs) nem a masodik, ervenyes szabalyt alkalmazta"
+    FFail=$((FFail + 1)); echo "$NODE_OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T16g KIHAGYVA -- nincs node a PATH-on"
 fi
 
 # ── Osszegzes ─────────────────────────────────────────────────────────────────
