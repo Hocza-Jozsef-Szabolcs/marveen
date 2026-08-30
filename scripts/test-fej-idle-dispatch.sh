@@ -72,6 +72,9 @@ SQLEOF
   # A kiosztas-mock: naplozza a hivast, es kilepesi kodot ad. A kod forrasa elsobbseggel:
   # $FTmp/kilepokod/<fej>-<kartya> (kartyankent eltero eredmenyhez), majd $FTmp/kilepokod/<fej>
   # (a regi, fejenkenti minta), hianyzo fajl -> 0, sikeres kiosztas.
+  # Sikeres kiosztasnal a VALODI kartya-kiosztas.sh az assignee-t beallitja es in_progress-re
+  # viszi a kartyat (6-8. lepes) -- ezt a mock is elvegzi, kulonben egy delegalatlan/marveen
+  # kartyat a soron kovetkezo tetlen fej is UJRA szabadnak latna es ujra megprobalna (T16/T18).
   cat > "$FTmp/root/scripts/kartya-kiosztas.sh" <<'MOCKEOF'
 #!/usr/bin/env bash
 echo "KIOSZTAS: $1 $2" >> "$MOCK_DIR/hivasok"
@@ -83,6 +86,9 @@ elif [ -f "$MOCK_DIR/kilepokod/$2" ]; then
 fi
 if [ "$FKod" != "0" ]; then
   echo "MEGALLT" >&2
+else
+  sqlite3 "$MOCK_DIR/root/store/claudeclaw.db" \
+    "update kanban_cards set assignee='$2', status='in_progress' where id='$1';"
 fi
 exit "$FKod"
 MOCKEOF
@@ -96,7 +102,7 @@ MOCKEOF
 seed_card() {
   local id="$1" status="$2" assignee="$3" priority="${4:-normal}" created_at="${5:-0}" description="${6:-}" project="${7:-}" title="${8:-Teszt}"
   sqlite3 "$FTmp/root/store/claudeclaw.db" \
-    "insert into kanban_cards (id,title,description,status,assignee,priority,created_at,updated_at,project) values ('$id','$title','$description','$status','$assignee','$priority',$created_at,0,nullif('$project',''));"
+    "insert into kanban_cards (id,title,description,status,assignee,priority,created_at,updated_at,project) values ('$id','$title','$description','$status',nullif('$assignee',''),'$priority',$created_at,0,nullif('$project',''));"
 }
 
 # hu: a futo fejek listaja -- delphi ABECEBEN design es ereceipt ELOTT all, ahogy elesben is.
@@ -318,74 +324,6 @@ else
   check "T20 mutansnal a kartya NEM lett kiosztva (a T19 visszajon)" "0" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
 fi
 
-echo "── T11: CSAK VHR-projektu planned kartya -> NEM kioszthato, korlatozva-jelzes ──"
-# Elo eset (2026-08-24): a fej-idle-dispatch.sh delphi-nek es pascal-nak project=VHR kartyat
-# osztott ki onkezdemenyezetten, holott a VHR-vonalra nevesitett korlatozas van (CLAUDE.md,
-# "VHR-ugyben Zoli a cimzett, a flotta az e-penztargepen", 2026-08-15): a VHR-munkat Zoli
-# kerese tartja mozgasban, nem automatikus dispatch. Ket egymast koveto heartbeat-korben is
-# megismetlodott, mielott eszrevettem.
-setup_case
-printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
-seed_card K-vhr planned delphi normal 0 "" VHR
-rc=$(run_script)
-check "T11 a VHR-kartya NEM lett kiosztva"        "0" "$(hivas_szam 'KIOSZTAS: K-vhr delphi')"
-check "T11 korlatozva-jelzes a kimenetben"        "1" "$(grep -c 'VHR' "$FTmp/kimenet" || true)"
-check "T11 kilepesi kod 0"                        "0" "$rc"
-
-echo "── T12: VHR ES nem-VHR kartya egyutt -> a nem-VHR kioszthato, a VHR kimarad ────"
-setup_case
-printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
-seed_card K-vhr    planned delphi urgent 0 "" VHR
-seed_card K-normal planned delphi normal 1 "" QCassa
-rc=$(run_script)
-check "T12 a VHR-kartya NEM lett kiosztva"        "0" "$(hivas_szam 'KIOSZTAS: K-vhr delphi')"
-check "T12 a nem-VHR kartya kiosztva"             "1" "$(hivas_szam 'KIOSZTAS: K-normal delphi')"
-check "T12 kilepesi kod 0"                        "0" "$rc"
-
-echo "── T14: project URES, de a CIM VHR-t emlit -> NEM kioszthato (adatminosegi res) ──"
-# Elo eset (2026-08-24, 1a87d194): a project mezo 226 kartyan URES (kanban-project-mezo-226-
-# kartyan-ures-20260808) -- egy VHR5-os kartyan is, cimben egyertelmuen VHR5, project mezoben
-# semmi. A puszta project='VHR' szures ezt nem fogta ki, delphi elkezdte, vissza kellett vonni.
-setup_case
-printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
-seed_card K-vhr-notag planned delphi normal 0 "" "" "VHR5-60: cim alapjan VHR, project ures"
-rc=$(run_script)
-check "T14 a project nelkuli VHR-cimu kartya NEM lett kiosztva" "0" "$(hivas_szam 'KIOSZTAS: K-vhr-notag delphi')"
-check "T14 korlatozva-jelzes a kimenetben"                      "1" "$(grep -c 'korlatozva' "$FTmp/kimenet" || true)"
-check "T14 kilepesi kod 0"                                      "0" "$rc"
-
-echo "── T15: project URES, cim VHR-t emlit, DE van masik, valodi nem-VHR kartya is ──"
-setup_case
-printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
-seed_card K-vhr-notag planned delphi urgent 0 "" "" "VHR5-60: cim alapjan VHR, project ures"
-seed_card K-normal    planned delphi normal 1 "" QCassa "QCassa: sima kioszthato munka"
-rc=$(run_script)
-check "T15 a VHR-cimu kartya NEM lett kiosztva" "0" "$(hivas_szam 'KIOSZTAS: K-vhr-notag delphi')"
-check "T15 a nem-VHR kartya kiosztva"           "1" "$(hivas_szam 'KIOSZTAS: K-normal delphi')"
-
-echo "── T13 (MUTACIO): a VHR-szures kivetele -> a T11 BUKJON vissza ────────────────"
-CMutans4="$FTmp/fej-idle-dispatch-mutans4.sh"
-python3 - "$CScript" "$CMutans4" <<'PYEOF'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-text = open(src).read()
-old = "and not $vhr_feltetel"
-new = ""
-if old in text:
-    open(dst, 'w').write(text.replace(old, new, 1))
-PYEOF
-if [ ! -s "$CMutans4" ] || cmp -s "$CScript" "$CMutans4" 2>/dev/null; then
-  echo "  ⚠️  T13 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
-else
-  setup_case
-  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
-  seed_card K-vhr planned delphi normal 0 "" VHR
-  cp "$CMutans4" "$FTmp/root/scripts/fej-idle-dispatch.sh"
-  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
-  rc=$(run_script)
-  check "T13 mutansnal a VHR-kartya IS kiosztva (a T11 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-vhr delphi')"
-fi
-
 echo "── T8 (MUTACIO): a lezaro-jelzo szures kivetele -> a T7 BUKJON vissza ─────────"
 CMutans3="$FTmp/fej-idle-dispatch-mutans3.sh"
 python3 - "$CScript" "$CMutans3" <<'PYEOF'
@@ -413,6 +351,56 @@ else
   chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
   rc=$(run_script)
   check "T8 mutansnal a lezart kartya IS kiosztva (a T7 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+fi
+
+echo "── T16: nincs sajat kartya, DE van delegalatlan es marveen-nevu planned -> kiosztja ─"
+# Elo eset (c928b7c7): a "cards" lekerdezes csak assignee='$fej'-et nezett, ezert az
+# assignee=NULL (delegalatlan) es assignee='marveen' planned kartyak SOHA nem kerultek
+# kiosztasra egyetlen tetlen fejnek sem, akkor sem, ha volt tetlen kapacitas.
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delegalatlan planned "" normal 0
+seed_card K-marveen      planned marveen  normal 1
+rc=$(run_script)
+check "T16 a delegalatlan kartya kiosztva valamelyik tetlen fejnek" \
+  "1" "$(( $(hivas_szam 'KIOSZTAS: K-delegalatlan delphi') + $(hivas_szam 'KIOSZTAS: K-delegalatlan design') + $(hivas_szam 'KIOSZTAS: K-delegalatlan ereceipt') ))"
+check "T16 kilepesi kod 0" "0" "$rc"
+
+echo "── T17: SAJAT planned kartya ELSoBBSEGET elvezi a delegalatlan/marveen kartyaval szemben ─"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-sajat planned delphi normal 0
+seed_card K-delegalatlan planned ""     normal 1
+rc=$(run_script)
+check "T17 a sajat kartya kiosztva delphinek"        "1" "$(hivas_szam 'KIOSZTAS: K-delphi-sajat delphi')"
+check "T17 a delegalatlan kartyat delphi NEM probalta" "0" "$(hivas_szam 'KIOSZTAS: K-delegalatlan delphi')"
+check "T17 kilepesi kod 0"                            "0" "$rc"
+
+echo "── T18 (MUTACIO): a delegalatlan/marveen fallback kivetele -> a T16 BUKJON vissza ──"
+CMutans5="$FTmp/fej-idle-dispatch-mutans5.sh"
+python3 - "$CScript" "$CMutans5" <<'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+new = re.sub(
+    r"\n *if \[ -z \"\$cards\" \]; then\n *cards=\$\(sqlite3.*?assignee='marveen'.*?\n *fi\n",
+    "\n",
+    text, count=1, flags=re.S,
+)
+if new != text:
+    open(dst, 'w').write(new)
+PYEOF
+if [ ! -s "$CMutans5" ] || cmp -s "$CScript" "$CMutans5" 2>/dev/null; then
+  echo "  ⚠️  T18 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+  seed_card K-delegalatlan planned "" normal 0
+  cp "$CMutans5" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T18 mutansnal a delegalatlan kartya SENKINEK nem kiosztva (a T16 visszajon)" \
+    "0" "$(( $(hivas_szam 'KIOSZTAS: K-delegalatlan delphi') + $(hivas_szam 'KIOSZTAS: K-delegalatlan design') + $(hivas_szam 'KIOSZTAS: K-delegalatlan ereceipt') ))"
 fi
 
 echo

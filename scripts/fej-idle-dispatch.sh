@@ -32,31 +32,21 @@ if [ -z "$idle" ]; then
 fi
 
 for fej in $idle; do
-  # A VHR-projektu kartyakat a dispatch NEM oszthatja ki onkezdemenyezetten -- nevesitett,
-  # vissza nem vont korlatozas (CLAUDE.md, "VHR-ugyben Zoli a cimzett, a flotta az
-  # e-penztargepen", 2026-08-15): a VHR-munkat Zoli kerese tartja mozgasban, nem automatikus
-  # heartbeat. Bizonyitottan megismetlodott HAROM egymast koveto heartbeat-korben (2026-08-24,
-  # delphi + pascal, mindannyiszor percekig futo munkat kellett visszavonni).
-  # A puszta project='VHR' NEM eleg: 226 kartyan URES a project mezo (kanban-project-mezo-226-
-  # kartyan-ures-20260808), ezert a cim/leiras VHR-emlitese IS kizaro ok.
-  # coalesce KOTELEZO: SQL harom-erteku logikaban a `project='VHR'` NULL project eseten NULL-t
-  # ad (nem FALSE-t), es a `not (NULL or ...)` is NULL marad -- a WHERE ekkor a sort KIHAGYJA,
-  # nem befogadja. Enelkul MINDEN ures project-u, nem-VHR kartya csendben eltunt volna a listabol.
-  #
-  # A cim/leiras-szoveges fallback CSAK URES project mezonel fut -- ha a project explicit ki van
-  # toltve valami MASSAL, azt kell hinni, nem a szoveget (2026-08-24, sajat hiba: a 98f3b15e,
-  # project='MARVEEN', a leirasaban parhuzamos peldakent felsorolta a "VHR5"-ot is, ez a regi
-  # `or title/description like '%VHR%'` miatt VHR-korlatozottnak latszott, es a backend orakig
-  # tetlenul allt tole -- holott Jozsi sajat, nem-VHR feladata volt).
-  vhr_feltetel="(coalesce(project,'')='VHR' or (coalesce(project,'')='' and (title like '%VHR%' or coalesce(description,'') like '%VHR%')))"
-  cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null and not $vhr_feltetel order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+  # A VHR-kapacitas-korlatozast Jozsi megszuntette (2026-08-25, Telegram: "A korlatozast regen
+  # eltoroltem!") -- a VHR-projektu planned kartyak mostantol ugyanugy kioszthatok, mint barmely
+  # mas kartya. A korabbi kizaro szures (project='VHR' vagy cim/leiras VHR-emlites) itt megszunt.
+  cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+  # Ha a fejnek nincs SAJAT nevere allitott planned kartyaja, a delegalatlan (assignee NULL)
+  # es a marveen-nevu planned kartyak is jelolt kiosztasi celok -- a szures korabban CSAK
+  # assignee='$fej'-et nezte, ezert ezek strukturalisan sosem kaptak kiosztast (c928b7c7).
+  # A sajat nevre allitott kartya ELSoBBSEGET elvezi: ez a fallback csak akkor fut, ha a
+  # fenti lekerdezes ures -- a prioritas-sorrend (urgent/high/normal/low, created_at asc)
+  # valtozatlan marad.
   if [ -z "$cards" ]; then
-    vhr_count=$(sqlite3 "$DB" "select count(*) from kanban_cards where assignee='$fej' and status='planned' and archived_at is null and $vhr_feltetel;")
-    if [ "$vhr_count" != "0" ]; then
-      echo "TETLEN: $fej -- csak VHR-projektu planned kartyaja van, korlatozva (Zoli kerese kell)"
-    else
-      echo "TETLEN: $fej -- nincs sajat nevre allitott planned kartyaja"
-    fi
+    cards=$(sqlite3 "$DB" "select id from kanban_cards where (assignee is null or assignee='marveen') and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+  fi
+  if [ -z "$cards" ]; then
+    echo "TETLEN: $fej -- nincs sajat nevre, delegalatlan vagy marveen-nevu planned kartyaja"
     continue
   fi
   kiosztva=0
