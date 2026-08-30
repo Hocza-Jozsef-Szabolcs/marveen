@@ -1801,9 +1801,16 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   const now = Math.floor(Date.now() / 1000)
   // Status-change audit event (kanban_card_events) is written by the
   // kanban_cards_status_audit DB trigger, not here -- see its definition.
+  // Moving an archived card into a non-done column is itself the un-archive
+  // signal -- without this, the card stayed archived_at-stamped and invisible
+  // in every archived_at IS NULL listing/dispatch query even after the move.
+  // A move into 'done' leaves archived_at untouched (that transition is not
+  // an un-archive action).
   return withKanbanAuditActor(actor, () => db.prepare(
-    'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-  ).run(status, sortOrder, now, id).changes > 0)
+    `UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?,
+       archived_at = CASE WHEN ? = 'done' THEN archived_at ELSE NULL END
+     WHERE id=?`
+  ).run(status, sortOrder, now, status, id).changes > 0)
 }
 
 // Stamp the once-only kanban -> agent dispatch guard. Returns false if the
