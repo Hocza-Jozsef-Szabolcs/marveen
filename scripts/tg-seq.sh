@@ -6,7 +6,8 @@
 #     The counter lives in a file, shared by the whole fleet.
 set -euo pipefail
 
-F="/Users/ceo/Marveen/store/telegram-msg-seq.txt"
+F="${TG_SEQ_FILE:-/Users/ceo/Marveen/store/telegram-msg-seq.txt}"
+DB="${TG_SEQ_DB:-/Users/ceo/Marveen/store/claudeclaw.db}"
 LOCKDIR="${F}.lockdir"
 TURELEM_MP=10       # hu: ennyit varunk a zarra, VALOS ido; utana FAIL-CLOSED (exit 3)
 
@@ -60,7 +61,45 @@ case "$__cur" in
     ;;
 esac
 
-n=$(( __cur + 1 ))
+# hu: 🛑 A FAJL ONMAGABAN NEM MERVADO -- a HANDOFF/restart-atmeneti uzenetek a fajl leptetese
+#     NELKUL mennek ki (kartya 883ff1f5, elozmeny 81eb5b34): a conversation_log-ban mar all egy
+#     nagyobb kiadott szam, mint amit a fajl mutat. A conversation_log tenyleges MAX kiadott
+#     ('out' iranyu) sorszamat is ki kell olvasni -- sima `{N}` ES MarkdownV2-escapelt `\{N\}`
+#     alakban egyarant, mert mindket forma elofordul eles adatban --, es a KETTO KOZUL A
+#     NAGYOBBAT venni alapul, nem a fajlt vakon.
+# en: The file alone is not authoritative -- handoff/restart-transition messages go out without
+#     advancing it. Read conversation_log's actual max issued ('out') number too, in both plain
+#     and MarkdownV2-escaped form, and take the larger of file vs. log.
+__log_max=0
+if [ -f "$DB" ]; then
+  __log_max=$(sqlite3 -json "$DB" \
+    "select substr(text,1,24) as t from conversation_log where direction='out' and text is not null;" \
+    2>/dev/null | python3 -c '
+import json, re, sys
+
+rx = re.compile(r"^(?:\{(\d+)\}|\\\{(\d+)\\\})")
+m = 0
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+for row in rows:
+    match = rx.match(row.get("t") or "")
+    if match:
+        n = int(match.group(1) or match.group(2))
+        if n > m:
+            m = n
+print(m)
+' 2>/dev/null)
+  case "$__log_max" in
+    ''|*[!0-9]*) __log_max=0 ;;
+  esac
+fi
+
+__base=$__cur
+[ "$__log_max" -gt "$__base" ] && __base=$__log_max
+
+n=$(( __base + 1 ))
 # hu: atomi csere -- a cel-fajl SOHA nem lesz felkesz allapotban (a fenti csonkolas-ablak ellen)
 printf '%s\n' "$n" > "${F}.tmp.$$"
 mv -f "${F}.tmp.$$" "$F"
