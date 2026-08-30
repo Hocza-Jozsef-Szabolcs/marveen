@@ -124,6 +124,11 @@ def parse_credentials(content: str) -> dict:
         "tls": raw.get("TLS", "true").strip().lower() not in ("false", "0", "no"),
         "user": raw["USER"],
         "password": raw["PASSWORD"],
+        # Outgoing From address; a shared-mailbox login (e.g. "Info.FenySoft") may not be a
+        # valid SMTP envelope sender on its own -- FROM_ADDRESS lets nas-mail-send.py send AS
+        # the real mailbox address while still authenticating with the login user. Optional,
+        # defaults to USER so existing (read-only) callers are unaffected.
+        "from_address": raw.get("FROM_ADDRESS") or raw["USER"],
     }
 
 

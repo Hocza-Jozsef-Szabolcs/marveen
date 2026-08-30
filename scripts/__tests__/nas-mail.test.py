@@ -41,6 +41,14 @@ class TestParseCredentials(unittest.TestCase):
         self.assertEqual(c["user"], "Info.Example")
         self.assertEqual(c["password"], "pw-plain")
 
+    def test_from_address_defaults_to_user_when_not_set(self):
+        c = nm.parse_credentials(FULL)
+        self.assertEqual(c["from_address"], "Info.Example")
+
+    def test_from_address_honours_explicit_override(self):
+        c = nm.parse_credentials(FULL + "\nFROM_ADDRESS=info@fenysoft.hu")
+        self.assertEqual(c["from_address"], "info@fenysoft.hu")
+
     def test_ignores_comments_and_blank_lines(self):
         c = nm.parse_credentials("# header\n\n" + FULL + "\n\n# trailer")
         self.assertEqual(c["user"], "Info.Example")
