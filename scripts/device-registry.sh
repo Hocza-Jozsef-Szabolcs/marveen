@@ -371,6 +371,53 @@ PY
       exit 1
     fi
 
+    # hu: *** A REPO-BUILD-STATE KIHUZASA A FELMENT CSOMAGBOL. ***
+    #     MERT HIANY (kartya #device-registry-record-repo-hash-20260826): a `record` eddig CSAK a
+    #     JokerQ versionCode-ot rogzitette. Egy UTOLAGOS olvaso nem tudta megkulonboztetni ket,
+    #     AZONOS JokerQ-szamu, de ELTERO QuantumAE/QCassa.MHMI tartalmu telepitest -- pontosan az a
+    #     rendeleti kockazat, amit a `check` mar HAROM hash-sel (jokerq/quantumae/qcassamhmi) mer.
+    #     Itt UGYANAZT a fajlt (`assets/repo-build-state.json`) huzzuk ki, de a KESZULEKEN FUTO
+    #     csomagbol -- ez a TENYLEGESEN futo build bizonyiteka, nem a helyi checkout allapota.
+    #     Ha a csomagban nincs (regi / nem JokerQ-konvencios build), a mezo EXPLICIT "NEM MERT" --
+    #     nem marad ki, nem ures. Ugyanaz az elv, mint a `check` kapuban (fail-closed jelzes,
+    #     de itt a `record` maga NEM all meg emiatt: a telepites bizonyitekat ez nem erintI).
+    # en: *** PULLING THE REPO-BUILD-STATE FROM THE INSTALLED PACKAGE. ***
+    #     MEASURED GAP: `record` so far only recorded the JokerQ versionCode. A LATER reader could
+    #     not tell apart two installs carrying the SAME JokerQ number but DIFFERENT QuantumAE/
+    #     QCassa.MHMI content. Same file (`assets/repo-build-state.json`) `check` already reads, but
+    #     pulled here from the package ACTUALLY RUNNING on the device -- evidence of what runs, not
+    #     of the local checkout. If the package lacks it (old / non-JokerQ-convention build), the
+    #     field is EXPLICITLY "NOT MEASURED" -- never omitted, never empty.
+    repo_state_json=""
+    if [ -n "${DEVICE_REPO_STATE_PROBE:-}" ]; then
+      echo "REPO-STATE MERo FELULIRVA: DEVICE_REPO_STATE_PROBE -- NEM keszulek-meres." >&2
+      repo_state_json="$(eval "$DEVICE_REPO_STATE_PROBE" 2>/dev/null)"
+    elif [ "$probe_kind" = "injektalt" ]; then
+      # hu: a versionCode-proba is injektalva volt -- nincs valodi eszkoz, tehat a csomag sem
+      #     huzhato le. Explicit NEM MERT, nem hallgatunk rola.
+      repo_state_json="MISSING"
+    else
+      GATE_PY="$(cd "$(dirname "$0")" && pwd -P)/device-registry-repo-gate.py"
+      remote_apk="$("$ADB" -s "$transport" shell pm path "$pkg" < /dev/null 2>/dev/null | sed -n 's/^package://p' | tr -d '\r\n')"
+      if [ -n "$remote_apk" ] && [ -f "$GATE_PY" ]; then
+        tmp_apk="$(mktemp "${TMPDIR:-/tmp}/device-apk-XXXXXX.apk")"
+        if "$ADB" -s "$transport" pull "$remote_apk" "$tmp_apk" >/dev/null 2>&1; then
+          repo_state_json="$(python3 - "$GATE_PY" "$tmp_apk" <<'PY'
+import importlib.util, json, sys
+gate_path, apk_path = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("device_registry_repo_gate", gate_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+state = mod._apk_extract_repo_build_state(apk_path)
+print("MISSING" if state is None else json.dumps(state))
+PY
+)"
+        fi
+        rm -f "$tmp_apk"
+      fi
+      [ -n "$repo_state_json" ] || repo_state_json="MISSING"
+    fi
+
     # hu: 🛑 ZAROLAS -- az utana kovetkezo olvas-modosit-ir ciklus (json.load -> append ->
     #     json.dump) ZAROLAS NELKUL last-write-wins bejegyzes-vesztest okoz egyideju hivasnal
     #     (kartya #830, ordog bukas-eloallitasa: 20 egyideju, egyenkent ervenyes hivasbol csak
@@ -394,9 +441,9 @@ PY
     done
     trap '__rc=$?; rmdir "$LOCKDIR" 2>/dev/null || true; exit $__rc' EXIT
 
-    python3 - "$REG" "$id" "$agent" "$pkg" "$build" "$(date '+%Y-%m-%d %H:%M:%S')" "$measured" "$probe_kind" <<'PY'
+    python3 - "$REG" "$id" "$agent" "$pkg" "$build" "$(date '+%Y-%m-%d %H:%M:%S')" "$measured" "$probe_kind" "$repo_state_json" <<'PY'
 import json,sys
-reg,id_,agent,pkg,build,now,measured,kind=sys.argv[1:9]
+reg,id_,agent,pkg,build,now,measured,kind,repo_state_raw=sys.argv[1:10]
 d=json.load(open(reg)); q=id_.lower()
 hit=next((x for x in d["devices"] if q in json.dumps(x).lower()), None)
 if not hit: print("nincs ilyen eszkoz:",id_); sys.exit(1)
@@ -416,6 +463,20 @@ if kind=="keszulek":
 else:
     entry["source"]="device-registry.sh record (INJEKTALT proba: DEVICE_VERSION_PROBE -- NEM keszulek-meres)"
     entry["injected_version_code"]=measured
+
+# hu: A `repo_build_state` MEZo EXPLICIT -- soha nem marad ki es soha nem ures. Ha a felmert
+#     csomagbol kihuzhato volt a harom repo (jokerq/quantumae/qcassamhmi) hash+dirty parja, az
+#     kerul be szerkezetesen; ha nem (regi/nem-JokerQ-konvencios build, vagy ervenytelen JSON), egy
+#     magyarazo string -- ugyanaz az elv, mint a `check` kapu fail-closed jelzeseinel.
+if repo_state_raw and repo_state_raw != "MISSING":
+    try:
+        entry["repo_build_state"]=json.loads(repo_state_raw)
+    except (ValueError, TypeError):
+        entry["repo_build_state"]=("NEM MERT -- a felmert csomagbol kihuzott repo-build-state "
+                                    "ERVENYTELEN JSON, feldolgozhatatlan.")
+else:
+    entry["repo_build_state"]=("NEM MERT -- assets/repo-build-state.json hianyzik a felmert "
+                                "csomagbol (regi vagy nem JokerQ-konvencios build).")
 
 hit.setdefault("last_installs",[]).append(entry)
 json.dump(d,open(reg,"w"),indent=2,ensure_ascii=False); open(reg,"a").write("\n")

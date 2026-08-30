@@ -45,6 +45,12 @@ trap cleanup EXIT
 DEVICE_ID="RZCY50N599X"
 PACKAGE="com.QCassa.JokerQ"
 
+# hu: A felmert csomagbol kihuzott repo-build-state MINTA -- ugyanaz a harom kulcs (jokerq/
+#     quantumae/qcassamhmi), amit a `device-registry-repo-gate.py` mar ismer (0795cfb commit).
+# en: Sample repo-build-state pulled from the measured package -- the same three keys
+#     (jokerq/quantumae/qcassamhmi) `device-registry-repo-gate.py` already knows about.
+STATE_JSON='{"jokerq":{"hash":"9e594ea12345","dirty":"false"},"quantumae":{"hash":"df9557f7abcd","dirty":"true"},"qcassamhmi":{"hash":"6b52743aefef","dirty":"false"}}'
+
 # hu: Hany bejegyzes all a teszt-eszkozon a masolatban. Ehhez kepest merunk.
 # en: How many entries the test device has in the copy. We measure against this.
 installs_count() {
@@ -54,6 +60,21 @@ d = json.load(open(sys.argv[1]))
 q = sys.argv[2].lower()
 hit = next((x for x in d["devices"] if q in json.dumps(x).lower()), None)
 print(len(hit.get("last_installs", [])) if hit else -1)
+PY
+}
+
+# hu: A bejegyzes `repo_build_state` mezoje -- a felmert csomagbol kihuzott harom repo hash+dirty
+#     parja, vagy egy magyarazo string, ha a csomagbol nem volt kihuzhato.
+# en: The entry's `repo_build_state` field -- the three repo hash+dirty pairs pulled from the
+#     measured package, or an explanatory string if none could be pulled.
+repo_state_field() {
+  python3 - "$1" "$DEVICE_ID" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+q = sys.argv[2].lower()
+hit = next((x for x in d["devices"] if q in json.dumps(x).lower()), None)
+e = (hit or {}).get("last_installs", [{}])[-1]
+print(json.dumps(e.get("repo_build_state")))
 PY
 }
 
@@ -188,6 +209,118 @@ run_case "injektalt proba -> a bejegyzes NEM allit keszulek-merest" \
 # en: 7. CONCURRENCY: N parallel, INDIVIDUALLY VALID calls on the SAME device. The `record`
 #     read-modify-write cycle causes silent last-write-wins entry loss without a lock -- the JSON
 #     stays valid, only the entry count falls short.
+# hu: 7. A FELMERT CSOMAG TARTALMAZZA a repo-build-state-et -> a bejegyzes mindharom repo
+#     hash+dirty parjat rogziti (nem csak a versionCode-ot).
+# en: 7. THE MEASURED PACKAGE CONTAINS the repo-build-state -> the entry records all three repo
+#     hash+dirty pairs (not just the versionCode).
+run_case_repo_state_present() {
+  local reg="$WORK/devices-$RANDOM.json"
+  cp "$SOURCE_REG" "$reg"
+
+  local out
+  out=$(DEVICE_REGISTRY="$reg" DEVICE_VERSION_PROBE="echo versionCode=774" \
+        DEVICE_REPO_STATE_PROBE="echo '$STATE_JSON'" \
+        bash "$SCRIPT" record "$DEVICE_ID" avalonia "$PACKAGE" 774 2>&1)
+  local rc=$?
+
+  local got
+  got="$(repo_state_field "$reg")"
+  local want
+  want="$(python3 -c "import json,sys; print(json.dumps(json.loads('$STATE_JSON')))")"
+
+  if [ "$rc" -eq 0 ] && [ "$got" = "$want" ]; then
+    PASS=$((PASS + 1))
+    printf '  [OK]   repo-build-state jelen van a csomagban -> mindharom repo rogzitve\n'
+  else
+    FAIL=$((FAIL + 1))
+    FAILED_NAMES+=("repo-build-state jelen van a csomagban -> mindharom repo rogzitve")
+    printf '  [BUKO] repo-build-state jelen van a csomagban -> mindharom repo rogzitve\n'
+    printf '         exit=%s  kapott=%s\n         vart=%s\n' "$rc" "$got" "$want"
+    printf '         kimenet: %s\n' "$(echo "$out" | head -3 | tr '\n' ' ')"
+  fi
+}
+run_case_repo_state_present
+
+# hu: 8. A FELMERT CSOMAGBAN NINCS repo-build-state (regi/nem-JokerQ-konvencios build) -> a mezo
+#     EXPLICIT "nem mert" -- NEM marad ki, NEM ures. Pontosan ez a kartya lenyege: egy csendben
+#     hianyzo mezot utolag nem lehet megkulonboztetni egy "nem is probaltuk kiolvasni" allapottol.
+# en: 8. THE MEASURED PACKAGE HAS NO repo-build-state (old / non-JokerQ-convention build) -> the
+#     field is EXPLICITLY "not measured" -- not omitted, not empty. This is the card's core point:
+#     a silently missing field cannot later be told apart from "we never tried to read it".
+run_case_repo_state_missing() {
+  local reg="$WORK/devices-$RANDOM.json"
+  cp "$SOURCE_REG" "$reg"
+
+  local out
+  out=$(DEVICE_REGISTRY="$reg" DEVICE_VERSION_PROBE="echo versionCode=774" \
+        DEVICE_REPO_STATE_PROBE="echo MISSING" \
+        bash "$SCRIPT" record "$DEVICE_ID" avalonia "$PACKAGE" 774 2>&1)
+  local rc=$?
+
+  local got
+  got="$(repo_state_field "$reg")"
+
+  case "$got" in
+    '"NEM MERT'*)
+      if [ "$rc" -eq 0 ]; then
+        PASS=$((PASS + 1))
+        printf '  [OK]   repo-build-state hianyzik a csomagbol -> explicit NEM MERT jelzes\n'
+      else
+        FAIL=$((FAIL + 1))
+        FAILED_NAMES+=("repo-build-state hianyzik a csomagbol -> explicit NEM MERT jelzes")
+        printf '  [BUKO] repo-build-state hianyzik a csomagbol -> exit=%s (0 varva)\n' "$rc"
+      fi
+      ;;
+    *)
+      FAIL=$((FAIL + 1))
+      FAILED_NAMES+=("repo-build-state hianyzik a csomagbol -> explicit NEM MERT jelzes")
+      printf '  [BUKO] repo-build-state hianyzik a csomagbol -> explicit NEM MERT jelzes\n'
+      printf '         kapott mezo: %s (elvart: "NEM MERT..." kezdetu string, NEM ures/hianyzo)\n' "$got"
+      printf '         kimenet: %s\n' "$(echo "$out" | head -3 | tr '\n' ' ')"
+      ;;
+  esac
+}
+run_case_repo_state_missing
+
+# hu: 9. A FELMERT CSOMAGBOL KIHUZOTT repo-build-state ERVENYTELEN JSON -> szinten explicit
+#     "NEM MERT", NEM a nyers, feldolgozatlan szemet kerul a nyilvantartasba.
+# en: 9. THE repo-build-state PULLED FROM THE MEASURED PACKAGE IS INVALID JSON -> also an explicit
+#     "NOT MEASURED", not the raw, unparsed garbage landing in the registry.
+run_case_repo_state_invalid() {
+  local reg="$WORK/devices-$RANDOM.json"
+  cp "$SOURCE_REG" "$reg"
+
+  local out
+  out=$(DEVICE_REGISTRY="$reg" DEVICE_VERSION_PROBE="echo versionCode=774" \
+        DEVICE_REPO_STATE_PROBE="echo '{ez nem json'" \
+        bash "$SCRIPT" record "$DEVICE_ID" avalonia "$PACKAGE" 774 2>&1)
+  local rc=$?
+
+  local got
+  got="$(repo_state_field "$reg")"
+
+  case "$got" in
+    '"NEM MERT'*)
+      if [ "$rc" -eq 0 ]; then
+        PASS=$((PASS + 1))
+        printf '  [OK]   repo-build-state ervenytelen JSON -> explicit NEM MERT jelzes\n'
+      else
+        FAIL=$((FAIL + 1))
+        FAILED_NAMES+=("repo-build-state ervenytelen JSON -> explicit NEM MERT jelzes")
+        printf '  [BUKO] repo-build-state ervenytelen JSON -> exit=%s (0 varva)\n' "$rc"
+      fi
+      ;;
+    *)
+      FAIL=$((FAIL + 1))
+      FAILED_NAMES+=("repo-build-state ervenytelen JSON -> explicit NEM MERT jelzes")
+      printf '  [BUKO] repo-build-state ervenytelen JSON -> explicit NEM MERT jelzes\n'
+      printf '         kapott mezo: %s\n' "$got"
+      printf '         kimenet: %s\n' "$(echo "$out" | head -3 | tr '\n' ' ')"
+      ;;
+  esac
+}
+run_case_repo_state_invalid
+
 run_concurrent_case() {
   local name="$1" n="$2"
   local reg="$WORK/devices-concurrent-$RANDOM.json"
