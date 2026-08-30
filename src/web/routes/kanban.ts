@@ -13,6 +13,7 @@ import {
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
+  type HeartbeatKanbanSummary,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -104,6 +105,60 @@ function fireKanbanDispatch(id: string): void {
   }
 }
 
+// HBWAITCAP826: a live board can carry dozens of `waiting` cards (measured
+// 2026-08-30: 80), and a report that lists all of them stops being read -- the
+// same lesson HEARTBEAT_URGENT_SQL already learned for `done` cards. The list
+// is capped to the HEARTBEAT_SUMMARY_WAITING_CAP most recent ones, but "most
+// recent" is NOT updated_at: the same measurement found only 48 distinct
+// updated_at values across those 80 cards (largest tie group 7), because
+// updated_at is a bulk write-timestamp on this board, not an activity signal
+// (a1408ae, card #344). A cap sorted on a field with 7-way ties drops cards
+// ARBITRARILY within the tie. `seq` -- the SQLite rowid HEARTBEAT_WAITING_SQL
+// now selects, monotonic and never reused -- breaks every tie the same way
+// every time, so the same board state always yields the same capped list.
+export const HEARTBEAT_SUMMARY_WAITING_CAP = 8
+
+type HeartbeatSummaryWaitingCard = {
+  id: string; title: string; status: string; priority: string
+  assignee?: string | null; seq?: number
+}
+
+export function capHeartbeatWaitingList<T extends HeartbeatSummaryWaitingCard>(waiting: T[]): T[] {
+  return [...waiting]
+    .sort((a, b) => (b.seq ?? 0) - (a.seq ?? 0))
+    .slice(0, HEARTBEAT_SUMMARY_WAITING_CAP)
+}
+
+// counts-first: JSON.stringify (and jsonMaybeGzip) preserve insertion order, so
+// a truncated read still carries the real totals -- the waiting LIST is
+// capped, counts.waiting never is. staleBlockers/unsentQuestions stay
+// uncapped: they are narrow, already-filtered signals (open cards citing a
+// closed blocker; waiting cards with no KIKULDVE marker), not a raw status
+// dump, so the volume problem the waiting cap solves does not apply to them.
+export function buildHeartbeatSummaryResponse(summary: HeartbeatKanbanSummary) {
+  const slim = (c: { id: string; title: string; status: string; priority: string; assignee?: string | null }) => ({
+    id: c.id, title: c.title, status: c.status, priority: c.priority, assignee: c.assignee ?? null,
+  })
+  return {
+    counts: {
+      urgent: summary.urgent.length,
+      in_progress: summary.in_progress.length,
+      // The FULL total, never the capped list's length -- the 2026-08-04
+      // lesson (a report line that quietly hides most of the board) in
+      // endpoint form.
+      waiting: summary.waiting.length,
+      staleBlockers: summary.staleBlockers.length,
+      unsentQuestions: summary.unsentQuestions.length,
+    },
+    urgent: summary.urgent.map(slim),
+    waiting: capHeartbeatWaitingList(summary.waiting).map(slim),
+    staleBlockers: summary.staleBlockers.map((r) => ({
+      id: r.id, title: r.title, referencedSeq: r.referencedSeq,
+    })),
+    unsentQuestions: summary.unsentQuestions.map((r) => ({ id: r.id, title: r.title })),
+  }
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -133,25 +188,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // removes the sqlite3 CLI from that path, which does not exist on a stock
   // Linux install (#870).
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
-    const summary = getHeartbeatKanbanSummary()
-    const slim = (c: { id: string; title: string; status: string; priority: string; assignee?: string | null }) => ({
-      id: c.id, title: c.title, status: c.status, priority: c.priority, assignee: c.assignee ?? null,
-    })
-    json(res, {
-      urgent: summary.urgent.map(slim),
-      waiting: summary.waiting.map(slim),
-      staleBlockers: summary.staleBlockers.map((r) => ({
-        id: r.id, title: r.title, referencedSeq: r.referencedSeq,
-      })),
-      unsentQuestions: summary.unsentQuestions.map((r) => ({ id: r.id, title: r.title })),
-      counts: {
-        urgent: summary.urgent.length,
-        in_progress: summary.in_progress.length,
-        waiting: summary.waiting.length,
-        staleBlockers: summary.staleBlockers.length,
-        unsentQuestions: summary.unsentQuestions.length,
-      },
-    })
+    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary()))
     return true
   }
 

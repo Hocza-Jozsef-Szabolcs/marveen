@@ -2105,8 +2105,15 @@ export const HEARTBEAT_URGENT_SQL =
   "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status != 'done'"
 export const HEARTBEAT_IN_PROGRESS_SQL =
   "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress'"
+// `rowid AS seq` (monotonic, never reused) is selected on purpose: the
+// heartbeat-summary endpoint caps this list, and updated_at cannot be the cap's
+// sort key -- measured 2026-08-30, 80 waiting cards carry only 48 distinct
+// updated_at values (largest tie group 7), because updated_at is a bulk
+// write-timestamp here, not an activity signal (see the comment on
+// getHeartbeatKanbanSummary and card #344). seq breaks every tie the same way
+// every time; see capHeartbeatWaitingList in web/routes/kanban.ts.
 export const HEARTBEAT_WAITING_SQL =
-  "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
+  "SELECT *, rowid AS seq FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
 
 // Inputs for computeStaleBlockerRefs (kanban-stale-blocker-refs.ts): every open
 // card (a candidate that might cite a blocker), every closed seq (what counts
