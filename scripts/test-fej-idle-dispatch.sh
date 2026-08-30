@@ -270,6 +270,54 @@ rc=$(run_script)
 check "T10 az aktiv kartya IGEN kiosztva (nincs hamis GYANUS)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
 check "T10 kilepesi kod 0"                                     "0" "$rc"
 
+echo "── T19: HAMIS POZITIV -- a ZARO-jelzo a 4. ELFOGADASI FELTETEL pontban egy MASIK ─"
+echo "        dokumentum/kartya jovobeli celallapotarol szol, nem a sajat kartyaerol ─"
+# Elo eset (3a79324c): a leiras 4. pontja ("...doksi 5. pontja frissitve/lezarva.") egy MASIK
+# dokumentum jovobeli lezarasarol szol, nem a sajat negy tetel allapotarol -- a kartyanak
+# 0 kommentje volt, egyik tetele sem volt elkezdve, a regi detektor megis GYANUS-kent
+# jelezte, mert a TELJES leirast atvizsgalta, nem csak az 1-3. pontokat.
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-1 planned delphi urgent 0 "1. MERT TENY: negy hatralevo tetel, a hordozo kartya mar done.
+2. KOVETKEZMENY: arva marad kartya nelkul.
+3. MIT KELL TENNI: mind a negy tetel megvalositasa.
+4. ELFOGADASI FELTETEL: mind a negy tetel implementalva, a masik doksi 5. pontja frissitve/lezarva."
+rc=$(run_script)
+check "T19 a nyitott kartya IGEN kiosztva (nincs hamis GYANUS)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+check "T19 kilepesi kod 0"                                     "0" "$rc"
+
+echo "── T20 (MUTACIO): az ELFOGADASI FELTETEL-szukites kivetele -> a T19 BUKJON vissza ─"
+CMutans6="$FTmp/fej-idle-dispatch-mutans6.sh"
+python3 - "$CScript" "$CMutans6" <<'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+# A leiras_sajat-szukito blokkot (shopt nocasematch + ELFOGADASI FELTETEL vagas) kihagyjuk,
+# es a lezaro-jelzo grep-et visszakotjuk a TELJES leirasra -- ha a szukites meg nincs kesz,
+# a fajl valtozatlan marad, a hivo ezt eszreveszi.
+new = re.sub(
+    r"\n *shopt -s nocasematch\n.*?\n *shopt -u nocasematch\n( *if echo )\"\$leiras_sajat\"",
+    r"\n\1\"$leiras\"",
+    text, count=1, flags=re.S,
+)
+if new != text:
+    open(dst, 'w').write(new)
+PYEOF
+if [ ! -s "$CMutans6" ] || cmp -s "$CScript" "$CMutans6" 2>/dev/null; then
+  echo "  ⚠️  T20 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+  seed_card K-delphi-1 planned delphi urgent 0 "1. MERT TENY: negy hatralevo tetel, a hordozo kartya mar done.
+2. KOVETKEZMENY: arva marad kartya nelkul.
+3. MIT KELL TENNI: mind a negy tetel megvalositasa.
+4. ELFOGADASI FELTETEL: mind a negy tetel implementalva, a masik doksi 5. pontja frissitve/lezarva."
+  cp "$CMutans6" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T20 mutansnal a kartya NEM lett kiosztva (a T19 visszajon)" "0" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+fi
+
 echo "── T11: CSAK VHR-projektu planned kartya -> NEM kioszthato, korlatozva-jelzes ──"
 # Elo eset (2026-08-24): a fej-idle-dispatch.sh delphi-nek es pascal-nak project=VHR kartyat
 # osztott ki onkezdemenyezetten, holott a VHR-vonalra nevesitett korlatozas van (CLAUDE.md,
@@ -347,7 +395,7 @@ text = open(src).read()
 # A vedelmi blokkot (a "MEGOLDVA|TARGYTALAN|..." elleni grep-et) kihagyjuk -- ha nincs ilyen
 # blokk meg (a javitas nincs kesz), a fajl valtozatlan marad, a hivo ezt eszreveszi.
 new = re.sub(
-    r"\n *if echo \"\$leiras\".*?\n *fi\n",
+    r"\n *if echo \"\$leiras_sajat\".*?\n *fi\n",
     "\n",
     text, count=1, flags=re.S,
 )

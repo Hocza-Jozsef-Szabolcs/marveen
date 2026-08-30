@@ -69,7 +69,22 @@ for fej in $idle; do
     # ELJARAS-donteshez illeszkedik, nem csak lezarashoz -- lasd T10 / vhrkapuhatokor,
     # ahol egy AKTIV feladat kozbulso szakaszcime volt, nem lezaras). A negy korabbi
     # valos eset mindegyikeben ONMAGABAN is jelen volt legalabb egy a lenti mintak kozul.
-    if echo "$leiras" | grep -qiE "MEGOLDVA:|TARGYTALAN|KESZ ES COMMITOLVA|LEZARVA"; then
+    #
+    # A "4. ELFOGADASI FELTETEL" szakasz (kartya-format, CLAUDE.md) egy JOVOBELI
+    # celallapotot ir le, nem a kartya JELENLEGI allapotat -- ide gyakran kerul zaro-jellegu
+    # szo egy MASIK dokumentum/kartya lezarasarol. Elo eset (3a79324c): a "...doksi 5. pontja
+    # frissitve/lezarva." mondat a 4. pontban allt, a sajat negy tetel egyike sem volt
+    # elkezdve (0 komment), a regi detektor megis GYANUS-kent jelezte, mert a TELJES leirast
+    # atvizsgalta. A zaro-jelzo keresest ezert csak az ELFOGADASI FELTETEL szakasz ELOTTI
+    # reszre szukitjuk -- ha a kartya sajat 1-3. pontjaban all zaro-jelzo, az tovabbra is fog.
+    shopt -s nocasematch
+    if [[ "$leiras" =~ (.*)ELFOGADASI[[:space:]]+FELTETEL ]]; then
+      leiras_sajat="${BASH_REMATCH[1]}"
+    else
+      leiras_sajat="$leiras"
+    fi
+    shopt -u nocasematch
+    if echo "$leiras_sajat" | grep -qiE "MEGOLDVA:|TARGYTALAN|KESZ ES COMMITOLVA|LEZARVA"; then
       echo "GYANUS: $fej -> $card mar keszen allhat (a leirasban lezaro jelzo all) -- ELLENORIZD"
       continue
     fi
