@@ -589,6 +589,43 @@ run_case "M1 1 tartalmi commit + 1 merge-commit -> a szamlalo 1-et jelez, NEM 2-
     "1 commit a build-szam utolso valtozasa ota" \
     check TESZT-ESZKOZ --repo "$REPO" --repo "$REPO2" --apk "$APK"
 
+# ================================================================================================
+# hu: `--require-apk` -- A TENYLEGES TELEPITESI DONTES NEM ELEGSZIK MEG A "NEM MERVE" SORRAL.
+#     A `check --repo` (`--apk` nelkul) MA IS exit 0-t ad "APK: NEM MERVE" szoveggel (lasd V3) --
+#     ez HELYES a munkafa-allapot ellenorzesnel (nincs telepitesi szandek), de FAIL-OPEN, ha a
+#     hivo ezt a valaszt telepitesi dontesre hasznalja: a NEM MERT allapot csendben MEHET-et ad.
+#     A `--require-apk` a HIVO SZANDEKAT jelzi ("ez telepitesi dontes") -- ha ekkor nincs `--apk`,
+#     a kapu HASZNALATI HIBAVAL all meg, MERES ELOTT, meg mielott barmit is nezne a fan.
+#     (kartya: device-registry-check-apk-nelkul-fail-open-20260826)
+# ================================================================================================
+make_repo
+echo "771" > "$REPO/BuildNumberV2.txt"
+git -C "$REPO" add -A
+git -C "$REPO" -c user.email=t@t -c user.name=t commit -qm build
+make_aapt2 771
+
+run_case "Q1 --require-apk --apk NELKUL -> hasznalati hiba, fail-closed" 2 "az --apk KOTELEZO" \
+    check TESZT-ESZKOZ --repo "$REPO" --require-apk
+run_case "Q1b --require-apk --apk NELKUL -> a kapu MERES ELOTT all meg (nincs MUNKAFA sor)" 2 "" \
+    check TESZT-ESZKOZ --repo "$REPO" --require-apk
+out_q1b=$(DEVICE_REGISTRY="$REG" AAPT2="$STUB" "$GATE" check TESZT-ESZKOZ --repo "$REPO" --require-apk 2>&1)
+if printf '%s' "$out_q1b" | grep -qF "MUNKAFA:"; then
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("Q1c"); printf '  BUKIK %-56s meres tortent hasznalati hiba elott\n' "Q1c nincs MUNKAFA-sor a hasznalati hibaban"
+else
+    PASS=$((PASS+1)); printf '  ok    %-56s (negativ ellenorzes)\n' "Q1c nincs MUNKAFA-sor a hasznalati hibaban"
+fi
+
+# hu: `--require-apk` ES `--apk` EGYUTT -- a mukodes AZONOS a sima `--apk`-val (V1). A kapcsolo
+#     csak a HIANYZO `--apk` esetet zarja ki, a meres logikajat nem valtoztatja.
+run_case "Q2 --require-apk ES --apk EGYUTT -> ugyanaz, mint sima --apk (V1)" 0 "APK: a mert fabol keszult" \
+    check TESZT-ESZKOZ --repo "$REPO" --apk "$APK" --require-apk
+
+# hu: `--require-apk` a MUNKAFA-ALLAPOT ellenorzest (V3: `--apk` nelkul, exit 0) NEM erinti --
+#     a 8 meglevo teszt (P2,P3,P4,F6,P5,R1,A2,X11) es V3 valtozatlanul zold marad, mert egyikük
+#     sem ad meg `--require-apk`-t.
+run_case "Q3 V3 megismetelve --require-apk NELKUL -> valtozatlanul MEHET (munkafa-ellenorzes)" 0 "APK: NEM MERVE" \
+    check TESZT-ESZKOZ --repo "$REPO"
+
 echo
 echo "osszesen: $((PASS + FAIL)) eset, PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -gt 0 ]; then

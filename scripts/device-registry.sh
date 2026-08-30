@@ -5,7 +5,7 @@
 #
 # HASZNALAT (TELEPITES ELoTT KOTELEZo):
 #   device-registry.sh check <id> [--repo <ut>]... [--path <alut>]... [--branch <nev>]
-#                                 [--apk <ut>] [--buildfile <ut>]
+#                                 [--apk <ut>] [--buildfile <ut>] [--require-apk]
 #         -> szabad-e telepiteni; exit 1 ha KERDEZNI kell
 #      --repo      ISMETELHEТo. Az APK tobb repobol is fordulhat (a JokerQ HAROMbol) -- ha egy
 #                  `ProjectReference` EGYIK megadott repoban sincs benne, az MERETLEN FUGGoSEG.
@@ -17,6 +17,11 @@
 #      --apk       a telepitendo csomag. A `versionCode`-ot (a csomag MANIFESTJEBoL) veti ossze a fa
 #                  build-szamaval. NEM az mtime-ot -- azt minden masolas atirja.
 #      --buildfile ha a build-szam nem az app-repo `BuildNumberV2.txt`-jeben all.
+#      --require-apk  TENYLEGES TELEPITESI DONTESHEZ KOTELEZO. `--apk` nelkul a `check --repo`
+#                  onmagaban is exit 0-t ad "APK: NEM MERVE" szoveggel (jo munkafa-allapot
+#                  ellenorzesre, ahol nincs telepitesi szandek) -- ez a hivo szandekat jelzi:
+#                  ha TELEPITENI akarsz, ezt add meg, es ha nincs `--apk`, a kapu HASZNALATI
+#                  HIBAVAL all meg meres elott, nem MEHET-tel.
 #   device-registry.sh list                                    -> minden eszkoz, egy sor
 #   device-registry.sh show <id>                               -> teljes bejegyzes
 #   device-registry.sh record <id> <agent> <package> <build>   -> telepites rogzitese (UTANA)
@@ -71,7 +76,7 @@ PY
     #     kodot szabad telepiteni") a COMMITRA vonatkozik, az APK viszont a MUNKAFABOL fordul.
     #     A kapu NEM tudja, MELYIK projekt fordul -- ezt a hivonak kell megadnia.
     DEV_ID=""; WANT_BRANCH="main"; HAS_PATH=0; PATHSPECS=(); REPOS=(); HAS_REPO=0
-    APK_PATH=""; HAS_APK=0; BUILDFILE=""
+    APK_PATH=""; HAS_APK=0; BUILDFILE=""; REQUIRE_APK=0
     # hu: A hasznalati hiba is VERDIKTTEL zarul. Enelkul, aki gepiesen olvassa
     #     (`grep "==> VERDIKT"`), egy elgepelt kapcsolora URES kimenetet kapna -- es az ures
     #     kimenet nem verdikt. Ugyanaz a lyuk, ami 2026-08-14-ig az ismeretlen-eszkoz agon allt.
@@ -92,12 +97,26 @@ PY
                   APK_PATH="$2"; HAS_APK=1; shift 2 ;;
         --buildfile) [ $# -ge 2 ] || usage_stop "a --buildfile ertek nelkul all (kell egy fajl-ut)."
                   BUILDFILE="$2"; shift 2 ;;
+        --require-apk) REQUIRE_APK=1; shift ;;
         -*)       usage_stop "ismeretlen kapcsolo: $1" ;;
         *)        [ -z "$DEV_ID" ] || usage_stop "egyszerre EGY eszkozt lehet ellenorizni ($DEV_ID es $1)."
                   DEV_ID="$1"; shift ;;
       esac
     done
     [ -n "$DEV_ID" ] || usage_stop "kell egy eszkoz-id/serial/ip."
+    # hu: 🛑 `--require-apk` -- A TENYLEGES TELEPITESI DONTES A HIVO SZANDEKAT JELZI.
+    #     A `--repo` NELKULI ag mar fail-closed (lasd feljebb, `HAS_REPO`), DE a `--repo`-VAL,
+    #     `--apk` NELKUL hivott `check` szandekosan MEHET-et ad "APK: NEM MERVE" szoveggel --
+    #     ez helyes munkafa-allapot ellenorzesnel (nincs telepitesi szandek). Ha viszont a hivo
+    #     EZT a valaszt telepitesi dontesre hasznalja, a NEM MERT allapot csendben atengedi a
+    #     telepitest -- UGYANAZ a hibaosztaly, mint a mar javitott --repo nelkuli ag.
+    #     A `--require-apk` a hivo altal KIMONDOTT szandek ("ez telepitesi dontes"): ha ekkor
+    #     nincs `--apk`, a kapu HASZNALATI HIBAVAL all meg, MERES ELOTT -- a `check --repo`-only
+    #     hasznalat (munkafa-allapot ellenorzes, `--require-apk` nelkul) valtozatlan marad.
+    #     (kartya: device-registry-check-apk-nelkul-fail-open-20260826)
+    if [ "$REQUIRE_APK" -eq 1 ] && [ "$HAS_APK" -eq 0 ]; then
+      usage_stop "--require-apk mellett az --apk KOTELEZO -- telepitesi dontest a kapu APK nelkul nem mondhat MEHET-nek. Adj meg egy --apk <ut>-at, vagy hagyd el a --require-apk-t, ha ez csak munkafa-allapot ellenorzes."
+    fi
 
     RESOLVED=""
     case "$DEV_ID" in
