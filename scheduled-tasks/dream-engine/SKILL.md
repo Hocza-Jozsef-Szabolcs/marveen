@@ -72,11 +72,18 @@ Output (max 1 ajánlás): repo URL + 1 mondat indok hogy MIÉRT releváns {{OWNE
 
 ### Bucket 5 — 🛠 Skill-flotta health (csak NEM-pinned skillek)
 
+🛑 **A `pinned:` frontmatter-mező NEM létezik egyetlen SKILL.md-ben sem — a `grep -L "^pinned:"` ezért mindig a TELJES készletet adja vissza, szűrés nélkül (mérve, pozitív kontrollal: `grep -L "^---$"` ugyanazon a mappán 0-t ad, tehát a mérő működik, csak a mező hiányzik).** A védelem egyetlen forrása a lenti névlista — a lépés azt használja szűrőnek, a hibás grep-et nem.
+
 ```bash
-# Antikvált skillek: nincs use-log, vagy a frontmatterben pinned: false
-ls ~/.claude/skills/ | head
-# Mindegyik SKILL.md-ben grep -l "pinned: true" — ezek mind védettek
-grep -L "^pinned:" ~/.claude/skills/*/SKILL.md  # azok a skillek ahol nincs pinned-flag (NEM gyári)
+# Antikvált skillek: helyi ~/.claude/skills/ mappa, a pinned neveket kihagyva (EGY forrás: a lenti lista)
+PINNED="claude-video frontend-design docx skill-creator skill-factory skill-install-from-git init review security-review simplify fewer-permission-prompts loop schedule claude-api update-config keybindings-help telegram:configure telegram:access"
+for d in ~/.claude/skills/*/; do
+  name=$(basename "$d")
+  case " $PINNED " in
+    *" $name "*) continue ;;   # pinned, kihagyva
+  esac
+  echo "$name"
+done
 ```
 
 Pinned default (mindig védett): claude-video, frontend-design, docx, skill-creator, skill-factory, skill-install-from-git, init, review, security-review, simplify, fewer-permission-prompts, loop, schedule, claude-api, update-config, keybindings-help, telegram:configure, telegram:access.
