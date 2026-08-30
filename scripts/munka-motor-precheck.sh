@@ -42,6 +42,7 @@ FBackupMaxAgeMin="${MMPC_BACKUP_MAX_AGE_MIN:-1560}"
 FPendingMaxAgeMin="${MMPC_PENDING_MAX_AGE_MIN:-10}"
 FPaneStateJs="${MMPC_PANE_STATE_JS:-$MHome/dist/pane-state.js}"
 FUrgentMaxAgeHours="${MMPC_URGENT_MAX_AGE_HOURS:-2}"
+FZeroCommentDescMinLen="${MMPC_ZERO_COMMENT_DESC_MIN_LEN:-30}"
 FCpuThreshold="${MMPC_CPU_THRESHOLD:-300}"
 FTmuxPrefix="${MMPC_TMUX_SESSION_PREFIX:-agent-}"
 
@@ -129,11 +130,22 @@ if [ -n "$FPaneFinding" ]; then
   FFindings+=("PANE-KEZBESITHETETLEN:"$'\n'"$FPaneFinding")
 fi
 
-# ── 5. NULLA-KOMMENT MERO (waiting kartya, amin meg senki nem irt semmit) ───────────────
+# ── 5. NULLA-KOMMENT MERO (waiting kartya, amin meg senki nem irt semmit, ES a kartya
+#      leirasa sem hordoz erdemi tartalmat) ──────────────────────────────────────────────
+# A nulla komment onmagaban NEM gyanus: a kikotest a kartya SAJAT leirasaba kell irni, nem
+# kommentbe (az implementalo a kartyat olvassa, nem a beszelgetest), tehat egy alaposan
+# dokumentalt kartyan is allhat nulla komment. A mero ezert MASODIK feltetelt is nez: a
+# leiras rovid/ures-e. Csak a KETTO EGYUTT (nulla komment ES ures/rovid leiras) szamit
+# "elfelejtett"-nek. A kuszob (MMPC_ZERO_COMMENT_DESC_MIN_LEN) DONTES, NEM MERT TENY --
+# csak az uresre/trivialisra valasztja el a dokumentalt esetet.
+# A `planned` statuszra NEM terjed ki: ott a nulla komment a NORMALIS allapot (egy kartya
+# leirassal keletkezik, komment addig nincs rajta, amig valaki hozza nem nyul), a jelzes
+# ereje a `waiting` STATUSZ ALLITASABOL jon ("varok valamire"), ami `planned`-nel nincs meg.
 FZeroCommentRows="$(sqlite3 -separator '|' "$FDb" \
   "select k.id, k.priority, round((strftime('%s','now')-k.updated_at)/3600.0,1) \
    from kanban_cards k where k.status='waiting' and k.archived_at is null \
    and (select count(*) from kanban_comments c where c.card_id=k.id)=0 \
+   and length(trim(coalesce(k.description,''))) < ${FZeroCommentDescMinLen} \
    order by k.updated_at asc;" 2>/dev/null)"
 if [ -n "$FZeroCommentRows" ]; then
   FRep="$(printf '%s\n' "$FZeroCommentRows" | awk -F'|' '{printf "  %s (%s, %s ora)\n", $1, $2, $3}')"
