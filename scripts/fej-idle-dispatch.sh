@@ -23,6 +23,7 @@ fej_sajat_projektek() {
   case "$1" in
     backend) echo "Marveen" ;;
     clicpu)  echo "CLI-CPU OctaCIL Obsivel Symphact" ;;
+    design)  echo "JokerQ QuantumAE" ;;
     *) echo "" ;;
   esac
 }
@@ -91,7 +92,7 @@ for fej in $idle; do
     #    infra-javitast kapott (8cb34e1b) -- egyik sem illett a sajat CLAUDE.md-jukben ZARTAN
     #    deklaralt szakteruletehez. A fej_sajat_projektek() csak azokat a fejeket sorolja fel,
     #    akiknek a CLAUDE.md-je ZART repo-halmazt deklaral -- a skill-alapu, tobb-projektes
-    #    fejeknel (akka/avalonia/delphi/design/kutato/mag/ordog/sejt/teszt/vaszon/...) a hatokor
+    #    fejeknel (akka/avalonia/delphi/kutato/mag/ordog/sejt/teszt/vaszon/...) a hatokor
     #    SZANDEKOSAN tobb projektre terjed ki, ott a projekt-mezo szerinti szures HAMIS BLOKKOT
     #    adna, ezert azok a fuggvenyben uresen (= nincs korlatozas) maradnak.
     if [ "$fallback" = "1" ]; then

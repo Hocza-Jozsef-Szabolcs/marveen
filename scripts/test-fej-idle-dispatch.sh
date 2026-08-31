@@ -462,6 +462,58 @@ rc=$(run_script)
 check "T26 a sajat nevre allitott QCassa-kartyat backend kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-backend-qcassa backend')"
 check "T26 kilepesi kod 0"                                           "0" "$rc"
 
+FAgentsJsonDesign='[{"name":"marveen","running":true},{"name":"design","running":true},{"name":"rendezo","running":true}]'
+
+echo "── T28: design NEM kaphat VHR5-projektu delegalatlan kartyat (b6956b10-eset) ──"
+# Elo eset (2026-08-31, b6956b10): a fallback-ag design fejnek osztott ki egy VHR5 (Delphi)
+# projektu kartyat. A design/CLAUDE.md SCOPE szakasza zartan felsorolja: "A QCassa projektek
+# feluletei: JokerQ, QuantumAE, Barmely tovabbi Avalonia vagy webes felulet" -- VHR5 (Delphi/BDE)
+# nem tartozik ide, de a fej_sajat_projektek() design-ra uresen (= nincs korlatozas) tert vissza.
+setup_case
+printf '%s' "$FAgentsJsonDesign" > "$FTmp/agents.json"
+seed_card K-vhr5 planned "" normal 0 "" VHR5
+rc=$(run_script)
+check "T28 a VHR5-kartyat design NEM probalta" "0" "$(hivas_szam 'KIOSZTAS: K-vhr5 design')"
+check "T28 kilepesi kod 0"                     "0" "$rc"
+
+echo "── T29: design TOVABBRA IS megkapja a sajat (JokerQ-projektu) delegalatlan kartyat ──"
+setup_case
+printf '%s' "$FAgentsJsonDesign" > "$FTmp/agents.json"
+seed_card K-jokerqui planned "" normal 0 "" JokerQ
+rc=$(run_script)
+check "T29 a JokerQ-projektu kartyat design kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-jokerqui design')"
+check "T29 kilepesi kod 0"                              "0" "$rc"
+
+echo "── T30: design TOVABBRA IS megkapja a sajat (QuantumAE-projektu) delegalatlan kartyat ──"
+setup_case
+printf '%s' "$FAgentsJsonDesign" > "$FTmp/agents.json"
+seed_card K-quantumae planned "" normal 0 "" QuantumAE
+rc=$(run_script)
+check "T30 a QuantumAE-projektu kartyat design kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-quantumae design')"
+check "T30 kilepesi kod 0"                                 "0" "$rc"
+
+echo "── T31 (MUTACIO): design kivetele a fej_sajat_projektek()-bol -> a T28 BUKJON vissza ──"
+CMutans8="$FTmp/fej-idle-dispatch-mutans8.sh"
+python3 - "$CScript" "$CMutans8" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+old = '    design)  echo "JokerQ QuantumAE" ;;\n'
+if old in text:
+    open(dst, 'w').write(text.replace(old, '', 1))
+PYEOF
+if [ ! -s "$CMutans8" ] || cmp -s "$CScript" "$CMutans8" 2>/dev/null; then
+  echo "  ⚠️  T31 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonDesign" > "$FTmp/agents.json"
+  seed_card K-vhr5 planned "" normal 0 "" VHR5
+  cp "$CMutans8" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T31 mutansnal a VHR5-kartya IS kiosztva (a T28 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-vhr5 design')"
+fi
+
 echo "── T27 (MUTACIO): a szakterulet-szures kivetele -> a T21 BUKJON vissza ────────"
 CMutans7="$FTmp/fej-idle-dispatch-mutans7.sh"
 python3 - "$CScript" "$CMutans7" <<'PYEOF'
