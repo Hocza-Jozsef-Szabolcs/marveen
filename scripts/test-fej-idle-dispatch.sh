@@ -383,7 +383,7 @@ import re, sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
 new = re.sub(
-    r"\n *if \[ -z \"\$cards\" \]; then\n *cards=\$\(sqlite3.*?assignee='marveen'.*?\n *fi\n",
+    r"\n *if \[ -z \"\$cards\" \]; then\n.*?cards=\$\(sqlite3.*?assignee='marveen'.*?\n *fi\n",
     "\n",
     text, count=1, flags=re.S,
 )
@@ -401,6 +401,92 @@ else
   rc=$(run_script)
   check "T18 mutansnal a delegalatlan kartya SENKINEK nem kiosztva (a T16 visszajon)" \
     "0" "$(( $(hivas_szam 'KIOSZTAS: K-delegalatlan delphi') + $(hivas_szam 'KIOSZTAS: K-delegalatlan design') + $(hivas_szam 'KIOSZTAS: K-delegalatlan ereceipt') ))"
+fi
+
+# ── T21-T26: SZAKTERULET-EGYEZTETES a delegalatlan/marveen fallback-kartyaknal (72df44eb) ──────
+# Elo eset: backend ketszer JokerQ/VHR temaju delegalatlan kartyat kapott (2ad01092, a HANDOFF
+# ket korabbi esete), clicpu Marveen-sajat infra-javitast kapott (8cb34e1b) -- a fallback-ag
+# szakterulet-egyezes nelkul valasztott. A sajat nevre mar allitott kartyakra (T26) a szures NEM
+# vonatkozik -- azok mar meghozott dontest hordoznak (pl. backend sajat 'QCassa'-projektu
+# kartyai a QCassa build-szamat MERo sajat szkriptjeirol szolnak).
+FAgentsJsonBackend='[{"name":"marveen","running":true},{"name":"backend","running":true},{"name":"rendezo","running":true}]'
+FAgentsJsonClicpu='[{"name":"marveen","running":true},{"name":"clicpu","running":true},{"name":"rendezo","running":true}]'
+
+echo "── T21: backend NEM kaphat JokerQ-projektu delegalatlan kartyat (2ad01092-eset) ──"
+setup_case
+printf '%s' "$FAgentsJsonBackend" > "$FTmp/agents.json"
+seed_card K-jokerq planned "" normal 0 "" JokerQ
+rc=$(run_script)
+check "T21 a JokerQ-kartyat backend NEM probalta" "0" "$(hivas_szam 'KIOSZTAS: K-jokerq backend')"
+check "T21 kilepesi kod 0"                        "0" "$rc"
+
+echo "── T22: backend TOVABBRA IS megkapja a sajat (Marveen-projektu) delegalatlan kartyat ──"
+setup_case
+printf '%s' "$FAgentsJsonBackend" > "$FTmp/agents.json"
+seed_card K-marveenproj planned "" normal 0 "" Marveen
+rc=$(run_script)
+check "T22 a Marveen-projektu kartyat backend kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-marveenproj backend')"
+check "T22 kilepesi kod 0"                                "0" "$rc"
+
+echo "── T23: clicpu NEM kaphat QCassa-projektu delegalatlan kartyat (8cb34e1b-eset) ──"
+setup_case
+printf '%s' "$FAgentsJsonClicpu" > "$FTmp/agents.json"
+seed_card K-qcassa planned "" normal 0 "" QCassa
+rc=$(run_script)
+check "T23 a QCassa-kartyat clicpu NEM probalta" "0" "$(hivas_szam 'KIOSZTAS: K-qcassa clicpu')"
+check "T23 kilepesi kod 0"                       "0" "$rc"
+
+echo "── T24: clicpu TOVABBRA IS megkapja a sajat (Symphact-projektu) delegalatlan kartyat ──"
+setup_case
+printf '%s' "$FAgentsJsonClicpu" > "$FTmp/agents.json"
+seed_card K-symphact planned "" normal 0 "" Symphact
+rc=$(run_script)
+check "T24 a Symphact-projektu kartyat clicpu kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-symphact clicpu')"
+check "T24 kilepesi kod 0"                                "0" "$rc"
+
+echo "── T25: a hatokorbe NEM illo kartya kihagyasa utan a KOVETKEZO delegalatlan kartya megy ──"
+setup_case
+printf '%s' "$FAgentsJsonBackend" > "$FTmp/agents.json"
+seed_card K-vhr        planned "" urgent 0 "" VHR
+seed_card K-marveenproj planned "" normal 1 "" Marveen
+rc=$(run_script)
+check "T25 a VHR-kartyat backend NEM probalta"            "0" "$(hivas_szam 'KIOSZTAS: K-vhr backend')"
+check "T25 a Marveen-projektu kartyat backend kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-marveenproj backend')"
+check "T25 kilepesi kod 0"                                "0" "$rc"
+
+echo "── T26: a SZURES a SAJAT NEVRE allitott kartyakra NEM vonatkozik (mas-projektu is megy) ──"
+setup_case
+printf '%s' "$FAgentsJsonBackend" > "$FTmp/agents.json"
+seed_card K-backend-qcassa planned backend normal 0 "" QCassa
+rc=$(run_script)
+check "T26 a sajat nevre allitott QCassa-kartyat backend kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-backend-qcassa backend')"
+check "T26 kilepesi kod 0"                                           "0" "$rc"
+
+echo "── T27 (MUTACIO): a szakterulet-szures kivetele -> a T21 BUKJON vissza ────────"
+CMutans7="$FTmp/fej-idle-dispatch-mutans7.sh"
+python3 - "$CScript" "$CMutans7" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+# Sztring-hatarokkal vagjuk ki a teljes fallback-kaput (nem regex-egyensullyal), mert a blokk
+# BELUL egy MASIK if/fi-t is tartalmaz (fej_domain_illik hivasa) -- egy naiv nem-mohu "elso fi"
+# regex a BELSO fi-nel allna meg, es szintaktikai hibas mutanst hagyna hatra.
+start = '    if [ "$fallback" = "1" ]; then\n'
+stop = '    # A leiras VEGE lezaro-jelzot hordozhat'
+si, ei = text.find(start), text.find(stop)
+if si != -1 and ei != -1 and si < ei:
+    open(dst, 'w').write(text[:si] + text[ei:])
+PYEOF
+if [ ! -s "$CMutans7" ] || cmp -s "$CScript" "$CMutans7" 2>/dev/null; then
+  echo "  ⚠️  T27 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonBackend" > "$FTmp/agents.json"
+  seed_card K-jokerq planned "" normal 0 "" JokerQ
+  cp "$CMutans7" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T27 mutansnal a JokerQ-kartya IS kiosztva (a T21 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-jokerq backend')"
 fi
 
 echo
