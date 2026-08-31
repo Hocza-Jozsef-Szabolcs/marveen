@@ -23,6 +23,12 @@
 #
 # A KAPU SEMMIT NEM JAVIT ES NEM IR AT -- csak jelent. A tortenet valtozatlan marad.
 #
+# 🛑 A KAPU MONDJA KI, MELYIK KONVENCIOT FELTETELEZI (avalonia merese, JokerQ-SDK, 2026-08-14):
+#    egy repo vagy MINDEN commiton lepteti a szamot, vagy csak KIADASONKENT -- ez a repobol nem
+#    szarmaztathato, repo-szinten kapcsolhato a `scripts/build-number-conventions.json`-ban. EZT A
+#    KONVENCIOT OLVASSA A build-number-commit-gate.mjs (PreToolUse hard-gate) IS -- egy kozos fajl,
+#    kulonben a hook ott is leptetest kenyszeritene, ahol ez a mero szerint nem is kell.
+#
 # en: BUILD NUMBER COLLISION GATE -- pre-commit check that also measures ACROSS worktrees.
 #     It does NOT forbid a repeated value (that is a number's normal lifetime between bumps); it
 #     forbids a RETURNING value. Two detectors are needed because they measure different things and
@@ -56,10 +62,35 @@
 
 set -uo pipefail
 
+CScriptDir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 CBuildFile="BuildNumberV2.txt"
+# hu: A KONVENCIO-KAPCSOLO KOZOS FORRASA A build-number-commit-gate.mjs-szel (marveen, kartya-komment
+#     1928): az a hook MINDEN release-agi commitnal megkoveteli a fajl staged-jelenletet -- ha egy
+#     repo valojaban csak KIADASONKENT lep (JokerQ-SDK, avalonia merese: az utolso 8 commit mind
+#     53-at hordozza), a hook ott kikenyszeriti a leptetest, ahol a mero szerint nem is kell. EGY
+#     kozos JSON-t olvas mindket oldal, kulonben szetcsuszhatnak. `BSZ_CONVENTIONS_PATH` teszteknek.
+# en: SHARED source for the convention switch with build-number-commit-gate.mjs -- see there. One
+#     JSON file read by both sides so they cannot disagree on which repos are release-only bumpers.
+CConventionsPath="${BSZ_CONVENTIONS_PATH:-$CScriptDir/build-number-conventions.json}"
 # hu: 0 = NINCS MELYSEG-KORLAT (a teljes tortenet). Lasd a fejlec „a melyseg nem szukithet" reszet.
 # en: 0 = NO depth limit (walk the whole history).
 CDefaultLimit=0
+# hu: REFERENCIAPONT (kartya ec51fef8 / #1241): a check_history csak a referenciaponton VAGY UTANA
+#     szuletett commitokon alapulo leletre BLOKKOL (rc=1) -- a korabbi, mar beegett tortenelmi
+#     leletek tovabbra is KIIRODNAK, de nem allitjak meg a hivot. Az alapertek a kapu tenyleges
+#     bevezeto commitjanak (`7bf014f`) SAJAT masodperc-pontos idobelyege -- `git show -s
+#     --format=%ct 7bf014f` -> 1788181705 (2026-08-31T15:08:25+02:00), NEM csak a napja.
+#     🛑 A NAP-PONTOSSAGU alak (vaszon merese) egy UGYANAZON a napon, DE 7bf014f oraja ELoTT
+#        szuletett commitot (QuantumAE `78071c54`, 00:51) is a referenciapontnal "kesobbinek"
+#        latott -- tovabbra is blokkolt, holott a kapu csak aznap 15:08-kor lepett eletbe.
+#     `BSZ_REFERENCE_DATE` teszteknek (lasd `build-szam-utkozes-meres`-t hasznalo szintetikus
+#     repok) -- barom alakot fogad el: UNIX-masodperc, YYYY-MM-DD, vagy teljes ISO 8601 idobelyeg.
+# en: REFERENCE POINT: check_history only BLOCKS on findings anchored to a commit born ON OR AFTER
+#     this moment -- older, already-baked-in findings still print, they just do not stop the
+#     caller. The default is the introducing commit's (`7bf014f`) own second-precision timestamp,
+#     not merely its calendar day (a day-precision boundary let a same-day-but-earlier commit
+#     slip through -- see the comment in check_history for the measured case).
+CReferenceDate="${BSZ_REFERENCE_DATE:-1788181705}"
 
 FRoots=()
 FRepos=()
@@ -198,12 +229,45 @@ worktree_fingerprint_compute() {
 # ── 1. WORKTREE-K KOZOTTI UTKOZES ─────────────────────────────────────────────
 # hu: A kivalto eset: a JokerQ nyolc worktree-je szetszort szamokkal, es a Fo MUNKAKONYVTAR a main
 #     MOGOTT allt -- a kovetkezo commitja egy MAR FOGLALT szamot adott volna.
+# hu: A FoAG (repo GYOKERE, `git worktree list --porcelain` ELSo bejegyzese) EGYENES OSE-e egy
+#     masik worktree-nek -- MASODIK lelet (kartya ec51fef8 / #1241, ordog merese): a QuantumAE
+#     kamera-valto-szkenneles worktree-je (52a8dd1f) a fo ag akkori HEAD-jenek (950ba836) EGYENES
+#     ose, ket koztes commit (38f128fb + merge) egyike sem leptette a szamot -- ez NEM ket kodallapot
+#     egy azonositon, csak egy worktree, ami MEG NEM huzta be a fo ag azota erkezett munkajat.
+#
+# 🛑 AZ IRANY SZAMIT -- EZ NEM ALTALANOS "os-leszarmazott = nincs utkozes" SZABALY. A T12b eset (a
+#     mero sajat regressziosteszje) PONT A FORDITOTTJA: ott a FoAG az OS, es egy WORKTREE lep elore
+#     sajat, uj munkaval (peldaul `oldal.txt`) anelkul, hogy leptetne a szamot -- ez VALODI utkozes
+#     marad, mert a worktree FUGGETLEN munkat ad hozza, amit a fo ag meg nem lat. A kizaras tehat
+#     KIZAROLAG akkor all, ha a FoAG halad ELoRE es egy MASIK worktree marad EGYENES osen (elavult
+#     checkout, semmi sajat munkaja nincs) -- forditva (a worktree halad elore a fo agtol) tovabbra
+#     is jelez.
+# en: DIRECTION matters -- this is NOT a blanket "ancestor => no collision" rule. T12b (this file's
+#     own regression test) is the mirror case: there the PRIMARY worktree is the ancestor and a
+#     worktree adds its OWN new work without bumping -- that must keep flagging. The exclusion only
+#     fires when the PRIMARY has moved ahead and the OTHER worktree is a stale, unmodified checkout.
+worktree_stale_ancestor_of_primary() {
+  local repo="$1" primary_wt="$2" wt_a="$3" head_a="$4" wt_b="$5" head_b="$6"
+  local primary_head other_head
+
+  if [ "$wt_a" = "$primary_wt" ]; then
+    primary_head="$head_a"; other_head="$head_b"
+  elif [ "$wt_b" = "$primary_wt" ]; then
+    primary_head="$head_b"; other_head="$head_a"
+  else
+    return 1
+  fi
+
+  [ "$other_head" != "$primary_head" ] || return 1
+  git -C "$repo" merge-base --is-ancestor "$other_head" "$primary_head" 2>/dev/null
+}
+
 check_worktrees() {
   local repo="$1"
   git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 0
   git -C "$repo" rev-parse --git-common-dir >/dev/null 2>&1 || return 0
 
-  local seen_values="" line wt val head prev prev_head prev_wt dup=""
+  local seen_values="" line wt val head prev prev_head prev_wt dup="" primary_wt=""
 
   # 🛑 AZONOS SZAM ONMAGABAN NEM UTKOZES -- A KODALLAPOTNAK IS ELTERoNEK KELL LENNIE.
   #    MERT HAMIS RIASZTAS: a `QCassa.MHMI` ot worktree-je mind ugyanazon a commiton all, tiszta
@@ -224,6 +288,10 @@ check_worktrees() {
       "worktree "*)
         wt="${line#worktree }"
         head=""
+        # hu: `git worktree list --porcelain` MINDIG a FoAGGAL (a repo gyokerevel) kezdi a listat --
+        #     ez az elso "worktree " sor a primary_wt.
+        # en: The porcelain listing always starts with the PRIMARY worktree (the repo root).
+        [ -n "$primary_wt" ] || primary_wt="$wt"
         continue ;;
       "HEAD "*)
         head="${line#HEAD }" ;;
@@ -242,8 +310,12 @@ check_worktrees() {
       prev_wt=$(echo "$prev" | cut -d'|' -f3)
 
       if [ "$prev_head" != "$head" ]; then
-        dup="$dup$val|$wt|$prev_wt
+        if worktree_stale_ancestor_of_primary "$repo" "$primary_wt" "$wt" "$head" "$prev_wt" "$prev_head"; then
+          : # elavult, egyenes-osi checkout a fo ag mogott -- nem ket kodallapot, nincs lelet
+        else
+          dup="$dup$val|$wt|$prev_wt
 "
+        fi
       elif worktrees_differ "$wt" "$prev_wt"; then
         # hu: Azonos commit, ELTERo munkafa. A dragabb meres CSAK ide fut be -- ha nincs
         #     azonos-szam + azonos-HEAD par, egyetlen extra git-hivas sem tortenik.
@@ -293,11 +365,12 @@ check_worktrees() {
 check_history() {
   local repo="$1" out rc measured
 
-  out=$(BSZ_REPO="$repo" BSZ_FILE="$CBuildFile" BSZ_LIMIT="$FLimit" python3 - <<'PYEOF'
+  out=$(BSZ_REPO="$repo" BSZ_FILE="$CBuildFile" BSZ_LIMIT="$FLimit" BSZ_REFERENCE_DATE="$CReferenceDate" python3 - <<'PYEOF'
 import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 
 CRepo  = os.environ["BSZ_REPO"]
 CFile  = os.environ["BSZ_FILE"]
@@ -311,7 +384,23 @@ CLimit = int(os.environ["BSZ_LIMIT"])
 CDepthArgs = [] if CLimit <= 0 else ["-%d" % CLimit]
 
 CCompanion = re.compile(r"\[(deploy|kapu|release)\]")
-CSubjBuild = re.compile(r"build\s+([0-9]+)", re.IGNORECASE)
+# hu: POZITIV HORGONY (kartya ec51fef8 / #1241, clicpu merese + sajat ellenorzes): a regi,
+#     horgony nelkuli minta MINDEN "build NNN" emlitest sajat kihirdetesnek vett -- MERT ESET:
+#     QuantumAE 8c457ec6 cime egy MASIK repo (JokerQ) 741-es buildjere hivatkozik, a fajlban 1077
+#     all, semmi nem hirdet ellentmondast, megis "CIM ELTER"-t adott. A javitas: a szam csak akkor
+#     SAJAT kihirdetes, ha a cim ELEJEN egy ismert kiadas-tipusu elotag all.
+# 🛑 A `merge` KOTELEZo A LISTAN, NEM CSAK `chore|fix|feat|docs` (ahogy clicpu javasolta) -- SAJAT
+#    MERES: a fejlecben dokumentalt ket ismert VALODI eset egyike (JokerQ `5af6597`, "merge: main
+#    (build 728, sqlite-bionic asset) -> feat/plugin-tee-decryptor") EPP `merge:`-vel kezdodik.
+#    A `chore|fix|feat|docs`-ra szukitett horgony EZT a mar dokumentalt talalatot HALKITOTTA VOLNA
+#    EL -- a `merge` hozzaadasaval mindharom ismert valodi eset (QCassa 4b5ea94/cfde0b4, JokerQ
+#    5af6597) tovabbra is illeszkedik, a QuantumAE 8c457ec6 hamis pozitiv pedig kiesik.
+# en: POSITIVE ANCHOR: the number only counts as a SELF-announcement when the subject STARTS with
+#     a known release-type prefix. `merge` is REQUIRED in the list (not just chore|fix|feat|docs,
+#     as first proposed) -- one of the two real historical catches documented in this file's header
+#     (JokerQ 5af6597) is itself a `merge:`-prefixed subject; without `merge` that known case would
+#     silently stop firing.
+CSubjBuild = re.compile(r"^(?:chore|fix|feat|docs|merge)(?:\([^)]*\))?:.*?\bbuild\s+([0-9]+)", re.IGNORECASE)
 
 
 def git_text(*args):
@@ -353,46 +442,144 @@ def values_for(shas):
 
 branch = git_text("rev-parse", "--abbrev-ref", "HEAD").strip()
 
+# hu: REFERENCIAPONT (kartya ec51fef8 / #1241): a kapu 2026-08-31-i bevezetese elott mar
+#     beegett tortenelmi leletek NEM blokkolhatjak orokre a `wt done`-t -- a tortenet nem
+#     valtoztathato meg. Csak azok a leletek BLOKKOLNAK (rc=1), amelyeknek a KIVALTO commitja a
+#     referenciaponton VAGY utana szuletett -- a korabbiak tovabbra is KIIRODNAK (a tortenet
+#     lathato marad), csak nem allitjak meg a hivot.
+#
+# 🛑 A HATAR MASODPERC-PONTOS IDoBELYEG, NEM NAP-PONTOSSAGU DATUM (vaszon merese, ec51fef8
+#    utolagos hataresete): az elso alak `--date=short`-ot hasznalt (YYYY-MM-DD, lexikalis
+#    osszehasonlitas) -- egy UGYANAZON a NAPON, DE A KAPU TENYLEGES BEVEZETESE ELoTT szuletett
+#    commit (a QuantumAE `78071c54`, 00:51) igy `>=`-nek szamitott a "2026-08-31" hatarhoz kepest,
+#    es TOVABBRA IS blokkolt, holott a kapu csak aznap KESoBB, `7bf014f`-nel (15:08) lepett eletbe.
+#    A javitas: `%ct` (masodperc-pontos, TZ-fuggetlen UNIX-idobelyeg) mindket oldalon, es az
+#    alapertelmezett referenciapont `7bf014f` SAJAT commit-idopontja, nem a napja.
+# en: The boundary is a second-precision timestamp, not a calendar date -- the original
+#    `--date=short` form let a same-day-but-earlier commit slip past the day-string comparison.
+#    Fix: `%ct` (second-precision, TZ-agnostic unix epoch) on both sides, and the default
+#    reference point is the introducing commit's own moment, not its calendar day.
+CReferenceDate = os.environ.get("BSZ_REFERENCE_DATE", "").strip()
+
+
+def parse_reference(value):
+    """hu: A referenciapont MASODPERC-pontos UNIX-idobelyegre alakitasa. Harom bemeneti alak:
+       (1) puszta UNIX-masodperc szam, (2) YYYY-MM-DD (a nap KEZDETE -- visszamenoleges
+       kompatibilitas a korabbi, nap-pontossagu tesztekkel, ahol a napok kozott mindig van
+       tobb-orás tavolsag), (3) teljes ISO 8601 idobelyeg (a valodi hasznalat -- a bevezeto
+       commit teljes idopontja). Ertelmezhetetlen bemenetre None -- a hivo ilyenkor fail-closed
+       blokkol, ahogy az ures CReferenceDate is tette korabban.
+       en: Normalises the reference point to second-precision unix epoch. Three accepted shapes:
+       raw epoch seconds, a bare YYYY-MM-DD date (start of day, kept for the older day-precision
+       tests), or a full ISO 8601 timestamp (the real usage -- the introducing commit's exact
+       moment). Unparseable input returns None -- callers stay fail-closed on that, same as the
+       previous empty-string handling."""
+    if re.fullmatch(r"[0-9]+", value):
+        return int(value)
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return int(dt.timestamp())
+
+
+CReferenceEpoch = parse_reference(CReferenceDate) if CReferenceDate else None
+
 commits = []
-for line in git_text("log", "--format=%H|%P|%s", *CDepthArgs, "HEAD").splitlines():
+for line in git_text("log", "--format=%H|%P|%ct|%s", *CDepthArgs, "HEAD").splitlines():
     if not line.strip():
         continue
     sha, _, rest = line.partition("|")
-    parents, _, subject = rest.partition("|")
-    commits.append((sha, parents.split(), subject))
+    parents, _, rest2 = rest.partition("|")
+    date, _, subject = rest2.partition("|")
+    commits.append((sha, parents.split(), date, subject))
+
+commit_date = {sha: int(date) for sha, _, date, _ in commits if date.isdigit()}
+
+
+def blocks(sha):
+    """hu: Ez a commit a referenciaponton VAGY utana szuletett-e -- csak ez blokkol.
+       en: Whether this commit was born ON or AFTER the reference point -- only that blocks."""
+    if CReferenceEpoch is None:
+        return True
+    return commit_date.get(sha, 0) >= CReferenceEpoch
+
+
+CPreReferenceNote = "A REFERENCIAPONT ELoTT -- csak jelentve, nem blokkol"
+
+
+def annotate(sha, text):
+    """hu: A referenciapont ELoTTI sorokat megjeloli, hogy a hivo lassa: MIERT nem blokkol.
+       en: Marks pre-reference lines so the caller sees WHY this line did not block."""
+    if blocks(sha):
+        return text
+    return text + " (%s)" % CPreReferenceNote
 
 first_parent = [c for c in git_text("log", "--first-parent", "--format=%H",
                                     *CDepthArgs, "HEAD").split() if c]
 
 wanted = []
-for sha, parents, _ in commits:
+for sha, parents, _, _ in commits:
     wanted.append(sha)
     wanted.extend(parents)
 wanted.extend(first_parent)
 values = values_for(list(dict.fromkeys(wanted)))
 
+parent_map = {sha: parents for sha, parents, _, _ in commits}
+
+# (a) VISSZATERES: az ertek egy MASIK ertek utan ujra megjelenik-e -- LESZARMAZAS-TUDATOSAN
+#     (kartya 8ce3fb7b, avalonia+marveen merese): a KORABBI alak a TELJES tortenetet EGY, flat,
+#     datum-sorrendi vonalnak nezte -- ket FUGGETLEN, PARHUZAMOS ag (KOZOS elodbol elagazva,
+#     mindketto SAJAT maga leptet) igy hamis "visszateres"-t adott, amint a ket ag commitjai a
+#     datumban interlaceloltak (a JokerQ main klonjan: 4b38f2a->941 es 0b3d202->942 UGYANABBOL
+#     az 940-es szuloboli agazik el, es a kesobb szuletett, DE 941-et OROKLo bbc0a73 commit a flat
+#     bejarasban a 942 UTAN allt -- hamis "941 visszatert" lelet).
+# 🛑 A JAVITAS: TOPOLOGIKUS bejaras (szulo mindig a gyermeke ELoTT), es minden commit a SAJAT
+#    OSEITOL OROKOLT ertek-halmazt viszi tovabb. Egy visszateres csak akkor valodi, ha a commit
+#    ertekE ELTER MINDEN SZULoJEToL (tehat tenyleges valtozas/kiadas -- ugyanaz a felteltel, mint
+#    a (b) KIADAS-DUPLIKATUM detektornal), ES az uj ertek MAR SZEREPEL valamelyik SZULo SAJAT
+#    OROKSEGEBEN -- vagyis a sajat OSEI kozott, nem barmelyik parhuzamos ag oseiben.
+# en: FIX: topological walk (parents before children); each commit carries forward the union of
+#    values inherited from its OWN ancestors. A return only counts if the value genuinely changed
+#    (differs from every parent -- same condition as the duplicate-release detector) AND the new
+#    value already appears in some parent's OWN inherited history -- not merely earlier in an
+#    unrelated parallel branch's timeline.
+topo_order = [c for c in git_text("log", "--reverse", "--topo-order", "--format=%H",
+                                  *CDepthArgs, "HEAD").split() if c]
+
+inherited = {}   # sha -> frozenset(values seen along ANY path reaching this commit, incl. itself)
+returning = []   # [(sha, value), ...]
+returning_vals = set()
+
+for sha in topo_order:
+    v = values.get(sha)
+    parents = parent_map.get(sha, [])
+    parent_sets = [inherited[p] for p in parents if p in inherited]
+    combined = frozenset().union(*parent_sets) if parent_sets else frozenset()
+
+    if v:
+        parent_vals = [values.get(p) for p in parents]
+        changed = all(pv != v for pv in parent_vals) if parent_vals else True
+        if changed and v in combined and v not in returning_vals:
+            returning.append((sha, v))
+            returning_vals.add(v)
+        combined = combined | {v}
+
+    inherited[sha] = combined
+
 checked_commits = 0
 checked_subjects = 0
-returning = []
 release_values = {}
-duplicates = []
-subject_mismatch = []
+duplicates = []          # [(sha, value), ...]
+subject_mismatch = []    # [(sha, text), ...]
 
-seen_values = set()
-prev = None
-
-for sha, parents, subject in commits:
+for sha, parents, _date, subject in commits:
     v = values.get(sha)
     if not v:
         continue
     checked_commits += 1
-
-    # (a) VISSZATERES: az ertek egy MASIK ertek utan ujra megjelenik-e a bejart lancon
-    if v != prev:
-        if v in seen_values and v not in returning:
-            returning.append(v)
-        seen_values.add(v)
-    prev = v
 
     # (b) KIADAS-DUPLIKATUM: ket KIADAS-commit ugyanazt az erteket adja ki
     #
@@ -404,8 +591,8 @@ for sha, parents, subject in commits:
 
         if is_release:
             if v in release_values:
-                if v not in duplicates:
-                    duplicates.append(v)
+                if v not in [dv for _, dv in duplicates]:
+                    duplicates.append((sha, v))
             else:
                 release_values[v] = sha
 
@@ -414,8 +601,8 @@ for sha, parents, subject in commits:
     if m:
         checked_subjects += 1
         if m.group(1) != v:
-            subject_mismatch.append("     %s: a cim 'build %s'-t hirdet, a fajlban %s | %s"
-                                    % (sha[:8], m.group(1), v, subject[:52]))
+            subject_mismatch.append((sha, "     %s: a cim 'build %s'-t hirdet, a fajlban %s | %s"
+                                    % (sha[:8], m.group(1), v, subject[:52])))
 
 # (d) CSOKKENES az elso-szulo lancon -- a legelesebb alak, es a mai valos esetet is ez fogta meg
 #     (777 -> 778 -> 777: a HEAD szama KISEBB, mint a szulojee). A szam SOSEM csokkenhet.
@@ -433,15 +620,15 @@ for sha, parents, subject in commits:
 # en: A THIRD repo state existed and returned green: a value that is present but NOT A NUMBER (an
 #     unresolved merge conflict being the sharpest shape). The ordering detectors skipped it
 #     silently while the counter reported a non-blind measurement. It now BLOCKS.
-decreasing = []
+decreasing = []          # [(sha, text), ...]
 prev_num = None
 
 # hu: Az ERTELMEZHETETLEN ertekek a TELJES bejart lancrol gyulnek, nem csak az elso-szulo agrol --
 #     kulonben egy oldalagon allo konfliktus-marker ugyanugy atmenne, ahogy eddig mindegyik.
 # en: Unreadable values are collected from the WHOLE walked history, not just the first-parent line.
 unreadable = [
-    "     %s: %s" % (sha[:8], " ".join(values[sha].split())[:60])
-    for sha, _, _ in commits
+    (sha, "     %s: %s" % (sha[:8], " ".join(values[sha].split())[:60]))
+    for sha, _, _, _ in commits
     if values.get(sha) and not values[sha].isdigit()
 ]
 
@@ -451,7 +638,7 @@ for sha in reversed(first_parent):
         continue
 
     if prev_num is not None and int(v) < prev_num:
-        decreasing.append("     %s: %d -> %s (CSOKKENT)" % (sha[:8], prev_num, v))
+        decreasing.append((sha, "     %s: %d -> %s (CSOKKENT)" % (sha[:8], prev_num, v)))
     prev_num = int(v)
 
 hit = False
@@ -466,36 +653,48 @@ out = []
 # en: All four findings are always reported: every detector computes from the same single read, so
 #     skipping one would save nothing -- while the subject mismatch is the only finding that can be
 #     fixed exclusively at commit time.
+#
+# 🛑 A NEGY LELET MINDEGYIKE MOST MAR KETFELE SORT ADHAT (kartya ec51fef8 / #1241): a referenciapont
+#    ELoTTI sor MINDIG kiirodik (annotate() jelzi, hogy miert nem blokkol), de csak a referenciaponton
+#    VAGY utana szuletett sor allitja `hit`-et igazra. Egy lelet-tipus tehat blokkolhat UGY IS, hogy
+#    a listaja tobbsegeben regi -- eleg EGY friss sor.
 if decreasing:
     out.append("  🛑 A BUILD-SZAM CSOKKENT (%s, ag: %s) -- a szam SOSEM csokkenhet:" % (CRepo, branch))
-    out.extend(decreasing)
-    hit = True
+    out.extend(annotate(sha, text) for sha, text in decreasing)
+    hit = hit or any(blocks(sha) for sha, _ in decreasing)
 
 if unreadable:
     out.append("  🛑 %d ERTEK ERTELMEZHETETLEN (%s, ag: %s) -- a rendezettseg ezeken NEM merheto:"
                % (len(unreadable), CRepo, branch))
-    out.extend(unreadable)
+    out.extend(annotate(sha, text) for sha, text in unreadable)
     out.append("     (tipikus ok: FELOLDATLAN MERGE-KONFLIKTUS a build-szam fajlban)")
-    hit = True
+    hit = hit or any(blocks(sha) for sha, _ in unreadable)
 
 if returning:
-    out.append("  🛑 VISSZATERo BUILD-SZAM (%s, ag: %s): %s" % (CRepo, branch, " ".join(returning)))
+    # 🛑 A FEJLEC-SOR (":" utani ertek-lista) MARAD SZoKOZZEL-TAGOLT, ANNOTALATLAN -- ezt olvassa
+    #    GEPPEL a `wt.sh` hivo ES a mero sajat T7 tesztje (`sed 's/.*: //' | tr ' ' '\n'`). Az
+    #    annotaciot KULON SORRA tesszuk, nem a listaba keverve -- egy inline szoveg-toldalek a
+    #    szokozzel-tagolt tokeneket szetzuzna.
+    out.append("  🛑 VISSZATERo BUILD-SZAM (%s, ag: %s): %s"
+               % (CRepo, branch, " ".join(v for _, v in returning)))
     out.append("     (a szam egy MASIK ertek utan ujra megjelent -- ket kodallapot egy azonositon)")
-    hit = True
+    out.extend("     (%s: %s)" % (v, CPreReferenceNote) for sha, v in returning if not blocks(sha))
+    hit = hit or any(blocks(sha) for sha, _ in returning)
 
 if duplicates:
     out.append("  🛑 AZONOS ERTEK KET FAJL-VALTOZASBAN (%s, ag: %s): %s"
-               % (CRepo, branch, " ".join(duplicates)))
+               % (CRepo, branch, " ".join(v for _, v in duplicates)))
     out.append("     (ket KIADAS-commit ugyanazt a szamot adta ki -- ket kodallapot egy azonositon)")
     out.append("     (a merge, ami mar meglevo szamot HOZ AT, NEM kiadas -- ki van zarva)")
     out.append("     (a [deploy]/[kapu]/[release] kisero-commitok szinten ki vannak zarva)")
-    hit = True
+    out.extend("     (%s: %s)" % (v, CPreReferenceNote) for sha, v in duplicates if not blocks(sha))
+    hit = hit or any(blocks(sha) for sha, _ in duplicates)
 
 if subject_mismatch:
     out.append("  🛑 COMMIT-CIM ELTER A FAJLTOL (%s, ag: %s) -- hamis dokumentacio:" % (CRepo, branch))
-    out.extend(subject_mismatch)
+    out.extend(annotate(sha, text) for sha, text in subject_mismatch)
     out.append("     (ez az EGYETLEN lelet, amit kizarolag COMMIT-IDoBEN lehet javitani)")
-    hit = True
+    hit = hit or any(blocks(sha) for sha, _ in subject_mismatch)
 
 print("\n".join(out)) if out else None
 print("#MERT|%d|%d|%d" % (checked_commits, checked_subjects, len(unreadable)))
@@ -514,6 +713,97 @@ PYEOF
   printf '%s\n' "$out" | grep -v '^#MERT|' | grep -v '^$'
 
   return $rc
+}
+
+# hu: EGY repo build-szam-konvencioja -- lasd a fejlecben a CConventionsPath megjegyzeset. Az elso
+#     illeszkedo override nyer, kulonben az alapertelmezes. Olvasatlan/hianyzo config eseten
+#     "minden-commit-leptet"-et ad (a mai, mar ervenyben levo viselkedes -- a hiba NEM tagithatja a
+#     kapu hatokoret).
+#
+# 🛑 FUGGETLEN ATMERES (ordog, kartya-komment 3861) HAROM fail-open alakot talalt, MINDHAROM ITT
+#    JAVITVA: (1) hianyzo repoPathPattern -> Python `re.search(None, ...)` TypeErrort dobott,
+#    amit a bash-hivo URES konvencio-ertekkent latott -- a build-number-commit-gate.mjs oldalan
+#    ugyanez `new RegExp(undefined)` = /(?:)/, ami MINDENRE illeszkedik, tehat a KET OLDAL nemcsak
+#    hibazott, hanem MASKEPP hibazott. (2) ervenytelen regex -- ugyanigy csupasz kivetel volt.
+#    (3) EZERT a validacio itt UGYANAZT a szabalyt koveti, mint a .mjs oldalon: minden mezot
+#    tipus/ertek szerint ellenoriz HASZNALAT ELoTT, es egy hibas szabalyt KIHAGY (nem match-all,
+#    nem crash) -- igy a ket oldal UGYANARRA a torott configra UGYANAZT a dontest hozza.
+# en: A repo's build-number convention -- unreadable/missing config falls back to the
+#     already-enforced default, so a broken config cannot widen the gate. Every rule field is
+#     validated before use and an invalid rule is SKIPPED, matching build-number-commit-gate.mjs's
+#     validation exactly so the two sides cannot diverge on the same malformed config.
+convention_for() {
+  local repo="$1"
+  BSZ_REPO_FOR_CONV="$repo" BSZ_CONV_PATH="$CConventionsPath" python3 - <<'PYEOF'
+import json
+import os
+import re
+import sys
+
+KKnownConventions = ("minden-commit-leptet", "kiadasonkent-leptet")
+
+# Mirrors usesOnlyCommonRegexSubset() in build-number-commit-gate.mjs --
+# SAME blocklist, same reasoning: python `re` and JS RegExp accept some
+# constructs that mean something DIFFERENT on the other side without either
+# side erroring (card #1085 point B / Marveen decision 3871 point 2). Keep
+# the two lists in sync by hand; there is no shared runtime between a .mjs
+# and a python heredoc to import from.
+KDivergentConstructs = (
+    re.compile(r"\(\?(?!:)"),   # any special group other than (?:...)
+    re.compile(r"[*+?}]\+"),    # possessive quantifier -- python 3.11+ only
+    re.compile(r"\\k<"),        # named backreference (JS \k<name> syntax)
+    re.compile(r"\\[AZ]"),      # python-only \A/\Z -- JS reads them as "A"/"Z" literally
+    re.compile(r"\\[pP]\{"),    # unicode property escape
+)
+
+
+def uses_only_common_regex_subset(pattern):
+    return not any(rx.search(pattern) for rx in KDivergentConstructs)
+
+
+def resolve():
+    repo = os.environ["BSZ_REPO_FOR_CONV"].replace("\\", "/")
+    path = os.environ["BSZ_CONV_PATH"]
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return "minden-commit-leptet"
+
+    overrides = cfg.get("overrides", [])
+    if not isinstance(overrides, list):
+        overrides = []
+
+    for rule in overrides:
+        if not isinstance(rule, dict):
+            continue
+        pattern = rule.get("repoPathPattern")
+        convention = rule.get("convention")
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        if convention not in KKnownConventions:
+            continue
+        if not uses_only_common_regex_subset(pattern):
+            continue
+        try:
+            matched = re.search(pattern, repo)
+        except re.error:
+            continue
+        if matched:
+            return convention
+
+    default = cfg.get("defaultConvention")
+    return default if default in KKnownConventions else "minden-commit-leptet"
+
+
+try:
+    print(resolve())
+except Exception:
+    # Utolso vedovonal -- barmilyen elo nem latott hiba is a mai, mar ervenyben levo
+    # viselkedesre esik vissza, nem crashel es nem hagy URES erteket.
+    print("minden-commit-leptet")
+PYEOF
 }
 
 # ── Futtatas ──────────────────────────────────────────────────────────────────
@@ -539,6 +829,7 @@ for repo in "${FRepos[@]}"; do
   fi
 
   FCheckedRepos=$((FCheckedRepos + 1))
+  echo "  KONVENCIO ($repo): $(convention_for "$repo")"
 
   check_worktrees "$repo" || FFindings=$((FFindings + 1))
   check_history   "$repo" || FFindings=$((FFindings + 1))

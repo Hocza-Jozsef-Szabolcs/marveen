@@ -42,6 +42,7 @@ FBackupMaxAgeMin="${MMPC_BACKUP_MAX_AGE_MIN:-1560}"
 FPendingMaxAgeMin="${MMPC_PENDING_MAX_AGE_MIN:-10}"
 FPaneStateJs="${MMPC_PANE_STATE_JS:-$MHome/dist/pane-state.js}"
 FUrgentMaxAgeHours="${MMPC_URGENT_MAX_AGE_HOURS:-2}"
+FZeroCommentDescMinLen="${MMPC_ZERO_COMMENT_DESC_MIN_LEN:-30}"
 FCpuThreshold="${MMPC_CPU_THRESHOLD:-300}"
 FTmuxPrefix="${MMPC_TMUX_SESSION_PREFIX:-agent-}"
 
@@ -129,11 +130,22 @@ if [ -n "$FPaneFinding" ]; then
   FFindings+=("PANE-KEZBESITHETETLEN:"$'\n'"$FPaneFinding")
 fi
 
-# ── 5. NULLA-KOMMENT MERO (waiting kartya, amin meg senki nem irt semmit) ───────────────
+# ── 5. NULLA-KOMMENT MERO (waiting kartya, amin meg senki nem irt semmit, ES a kartya
+#      leirasa sem hordoz erdemi tartalmat) ──────────────────────────────────────────────
+# A nulla komment onmagaban NEM gyanus: a kikotest a kartya SAJAT leirasaba kell irni, nem
+# kommentbe (az implementalo a kartyat olvassa, nem a beszelgetest), tehat egy alaposan
+# dokumentalt kartyan is allhat nulla komment. A mero ezert MASODIK feltetelt is nez: a
+# leiras rovid/ures-e. Csak a KETTO EGYUTT (nulla komment ES ures/rovid leiras) szamit
+# "elfelejtett"-nek. A kuszob (MMPC_ZERO_COMMENT_DESC_MIN_LEN) DONTES, NEM MERT TENY --
+# csak az uresre/trivialisra valasztja el a dokumentalt esetet.
+# A `planned` statuszra NEM terjed ki: ott a nulla komment a NORMALIS allapot (egy kartya
+# leirassal keletkezik, komment addig nincs rajta, amig valaki hozza nem nyul), a jelzes
+# ereje a `waiting` STATUSZ ALLITASABOL jon ("varok valamire"), ami `planned`-nel nincs meg.
 FZeroCommentRows="$(sqlite3 -separator '|' "$FDb" \
   "select k.id, k.priority, round((strftime('%s','now')-k.updated_at)/3600.0,1) \
    from kanban_cards k where k.status='waiting' and k.archived_at is null \
    and (select count(*) from kanban_comments c where c.card_id=k.id)=0 \
+   and length(trim(coalesce(k.description,''))) < ${FZeroCommentDescMinLen} \
    order by k.updated_at asc;" 2>/dev/null)"
 if [ -n "$FZeroCommentRows" ]; then
   FRep="$(printf '%s\n' "$FZeroCommentRows" | awk -F'|' '{printf "  %s (%s, %s ora)\n", $1, $2, $3}')"
@@ -141,14 +153,30 @@ if [ -n "$FZeroCommentRows" ]; then
 fi
 
 # ── 6. URGENT-KOR (BLOKKOLT KAPU + NYITOTT HATARIDOK) ────────────────────────────────────
+# A kor forrasa: mikor lepett a kartya a JELENLEGI statuszaba (kanban_card_events, a
+# kanban_cards_status_audit trigger irja -- lasd src/db.ts). Ha nincs ilyen esemeny (regi
+# kartya, a trigger elotti allapotvaltas), a kartya letrehozasi ideje (created_at) a
+# tartalek forras. EGYIK SEM az `updated_at`, mert azt MINDEN komment (addKanbanComment,
+# src/db.ts) feltetel nelkul felulirja -- az a mero pontosan azt nullazna, amit meg kell
+# talalnia (kartya 3988cdd1, bukas-eloallitassal igazolva: test-munka-motor-precheck.sh T6c/T6d).
 FUrgentMaxAgeSec=$(( FUrgentMaxAgeHours * 3600 ))
 FUrgentRows="$(sqlite3 -separator '|' "$FDb" \
-  "select id, status, coalesce(assignee,'-'), round((strftime('%s','now')-updated_at)/3600.0,1) \
-   from kanban_cards where archived_at is null and priority='urgent' and status in ('planned','waiting') \
-   and (strftime('%s','now')-updated_at) > ${FUrgentMaxAgeSec} \
-   order by updated_at asc;" 2>/dev/null)"
+  "WITH stall AS ( \
+     SELECT k.id, k.status, k.assignee, \
+            (SELECT MAX(e.created_at) FROM kanban_card_events e \
+             WHERE e.card_id = k.id AND e.to_status = k.status) AS ev_since, \
+            k.created_at AS fallback_since \
+     FROM kanban_cards k \
+     WHERE k.archived_at IS NULL AND k.priority='urgent' AND k.status IN ('planned','waiting') \
+   ) \
+   SELECT id, status, coalesce(assignee,'-'), \
+          round((strftime('%s','now') - coalesce(ev_since, fallback_since)) / 3600.0, 1), \
+          CASE WHEN ev_since IS NOT NULL THEN 'esemeny' ELSE 'letrehozas' END \
+   FROM stall \
+   WHERE (strftime('%s','now') - coalesce(ev_since, fallback_since)) > ${FUrgentMaxAgeSec} \
+   ORDER BY coalesce(ev_since, fallback_since) ASC;" 2>/dev/null)"
 if [ -n "$FUrgentRows" ]; then
-  FRep="$(printf '%s\n' "$FUrgentRows" | awk -F'|' '{printf "  %s (%s, %s, %s ora)\n", $1, $2, $3, $4}')"
+  FRep="$(printf '%s\n' "$FUrgentRows" | awk -F'|' '{printf "  %s (%s, %s, %s ora, forras: %s)\n", $1, $2, $3, $4, $5}')"
   FFindings+=("URGENT-KOR (kuszob >${FUrgentMaxAgeHours} ora): urgent kartya, ami nem mozdult:"$'\n'"$FRep")
 fi
 

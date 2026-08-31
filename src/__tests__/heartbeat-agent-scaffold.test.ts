@@ -31,9 +31,9 @@ describe('renderHeartbeatClaudeMd', () => {
 
   it('routes the inter-agent message to the main agent id', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('"to":"helios"')
+    expect(out).toContain('HB_TO="helios"')
     // The sender is always the fixed heartbeat agent id.
-    expect(out).toContain('"from":"heartbeat"')
+    expect(out).toContain('"from": "heartbeat"')
   })
 
   it('uses the supplied store dir (absolute) for the DB and token paths', () => {
@@ -124,7 +124,7 @@ describe('renderHeartbeatClaudeMd', () => {
     })
     expect(a).not.toBe(b)
     expect(b).toContain("across Omar's systems")
-    expect(b).toContain('"to":"atlas"')
+    expect(b).toContain('HB_TO="atlas"')
     expect(b).toContain('/data/store/claudeclaw.db')
     expect(b).toContain('http://localhost:9000/api/messages')
   })
@@ -269,6 +269,38 @@ describe('no unfalsifiable warnings metric (HBWARN807)', () => {
     for (let i = 1; i < fences.length; i += 2) {
       expect(fences[i].toLowerCase()).not.toContain('warning')
     }
+  })
+})
+
+// HBHEREDOC819: a raw `-d '{"...":"<the formatted text>"}'` template hands
+// the agent a fill-in-the-blank shell string every round, and the report
+// text carries backticks, `$`-references and quote characters that change
+// round to round. Letting the agent invent its own quoting for that each
+// time is the same freedom that produces broken ad hoc heredoc/pipe shapes
+// (`echo "$X" | cmd <<'PY'` silently drops the piped text because the
+// heredoc becomes the command's own stdin, not `$X`). The Send step must
+// fix the shape instead of leaving it to be reinvented.
+describe('outbound Send step uses a heredoc, never inline curl -d (HBHEREDOC819)', () => {
+  it('does not embed the report text inside a single-quoted -d JSON literal', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).not.toMatch(/-d\s+'\{"from"/)
+    expect(out).not.toContain('"content":"<the formatted text>"')
+  })
+
+  it('carries the report body into the command via a quoted heredoc', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toMatch(/<<'[A-Za-z0-9_]+'/)
+    expect(out).toContain('<the formatted text>')
+  })
+
+  it('builds the JSON body with json.dumps instead of hand-escaped quoting', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('json.dumps(')
+  })
+
+  it('still posts directly to the configured dashboard origin (distributed agents, #600)', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('curl -s -X POST http://localhost:3420/api/messages')
   })
 })
 

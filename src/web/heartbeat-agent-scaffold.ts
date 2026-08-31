@@ -320,14 +320,30 @@ When you receive the heartbeat prompt:
    and a line that always says the same thing stops being read -- at
    which point a real change looks exactly like the noise around it.
 
-3. **Send** that string to the main agent via the dashboard API:
+3. **Send** that string to the main agent via the dashboard API. NEVER
+   paste the report text into a single-quoted \`-d '...'\` argument:
+   the text carries backticks, \`$\`-references and quote characters
+   that change every round, and inventing that quoting fresh each time
+   is exactly the freedom that produces broken ad hoc heredoc/pipe
+   shapes (\`echo "$X" | cmd <<'PY'\` silently drops the piped text,
+   because the heredoc becomes the command's own stdin, not \`$X\`).
+   Fix the shape instead -- a quoted heredoc hands the report to STDIN
+   untouched, and \`json.dumps\` builds the JSON body without
+   hand-escaping:
 
    \`\`\`bash
    TOKEN=$(cat ${id.storeDir}/.dashboard-token)
+   BODY=$(HB_TO="${id.mainAgentId}" python3 -c '
+   import json, os, sys
+   print(json.dumps({"from": "heartbeat", "to": os.environ["HB_TO"], "content": sys.stdin.read()}))
+   ' <<'HEARTBEAT_REPORT_EOF'
+   <the formatted text>
+   HEARTBEAT_REPORT_EOF
+   )
    curl -s -X POST ${id.dashboardOrigin}/api/messages \\
      -H "Content-Type: application/json" \\
      -H "Authorization: Bearer $TOKEN" \\
-     -d '{"from":"heartbeat","to":"${id.mainAgentId}","content":"<the formatted text>"}'
+     -d "$BODY"
    \`\`\`
 
 4. **Stop.** Do not Telegram-reply, do not Slack, do not message

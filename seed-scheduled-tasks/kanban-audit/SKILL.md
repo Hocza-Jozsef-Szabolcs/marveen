@@ -1,6 +1,6 @@
 ---
 name: kanban-audit
-description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done archiválás) + beakadt task-ok számon kérése (előző audit óta nem mozdult in_progress -> ping az assignee-nek).
+description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done archiválás) + beakadt task-ok számon kérése (előző audit óta valódi státuszváltás nélküli in_progress -> ping az assignee-nek).
 ---
 
 # Kanban 4 órás audit
@@ -51,7 +51,13 @@ for c in json.load(sys.stdin):
    done
    ```
 
-3. **Beakadt task detection** (előző audit óta nem mozdult): in_progress kártyák amik `updated_at < last_audit_at`:
+3. **Beakadt task detection** (előző audit óta nincs VALÓDI státuszváltás): in_progress
+   kártyák, amiknek a `/events` végpontja nem mutat `last_audit_at` utáni bejegyzést.
+   *** NEM az `updated_at`-et hasonlítjuk `last_audit_at`-hoz -- azt egy sima komment
+   (`addKanbanComment`, `src/db.ts`) feltétel nélkül felülírja, tehát egy válasz-komment
+   (ami nem valódi előrehaladás) is "frissnek" mutatná a kártyát. A `kanban_card_events`
+   táblát (a `kanban_cards_status_audit` DB-trigger írja) viszont KIZÁRÓLAG tényleges
+   státuszváltás tölti -- ez a forrás komment-független. ***
    ```bash
    LAST="$(python3 -c "
 import json
@@ -59,13 +65,23 @@ try: print(json.load(open('{{INSTALL_DIR}}/store/kanban-audit-state.json')).get(
 except Exception: print(0)
 ")"
    curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban" | python3 -c "
-import json,sys,time
+import json,sys,time,urllib.request
 last=int('''$LAST''' or 0); now=int(time.time())
-rows=[c for c in json.load(sys.stdin)
-      if c.get('status')=='in_progress' and not c.get('archived_at') and (c.get('updated_at') or 0) < last]
-rows.sort(key=lambda c: c.get('updated_at') or 0)
-for c in rows:
-    print(c['id'], '|', (c.get('assignee') or '-'), '|', round((now-(c.get('updated_at') or now))/3600.0,1), 'h |', c.get('title'))
+cards=[c for c in json.load(sys.stdin) if c.get('status')=='in_progress' and not c.get('archived_at')]
+def events(card_id):
+    req=urllib.request.Request('http://localhost:$PORT/api/kanban/'+card_id+'/events',
+                                headers={'Authorization':'Bearer $TOKEN'})
+    return json.load(urllib.request.urlopen(req))
+rows=[]
+for c in cards:
+    evs=events(c['id'])
+    if any((e.get('created_at') or 0) > last for e in evs):
+        continue  # volt valodi statuszvaltas a legutobbi audit ota -- nem beakadt
+    since=evs[-1]['created_at'] if evs else (c.get('created_at') or c.get('updated_at') or now)
+    rows.append((since, c, round((now-since)/3600.0,1)))
+rows.sort(key=lambda r: r[0])
+for since, c, hours in rows:
+    print(c['id'], '|', (c.get('assignee') or '-'), '|', hours, 'h |', c.get('title'))
 "
    ```
 
@@ -90,12 +106,19 @@ for c in rows:
   látszik. Élő gépen mérve 2026-08-04: két külön Linux telepítésen `sqlite3` és `jq`
   egyaránt hiányzott, `python3` mindkettőn ott volt. A macOS gépeken azért nem tűnt fel,
   mert ott a `sqlite3` gyárilag van.
-- Az "előző audit óta nem mozdult" feltétel azt jelenti: `updated_at < last_audit_at`. NE használj abszolút 24h-os küszöböt.
+- Az "előző audit óta nem mozdult" feltétel azt jelenti: a `/events` végpont nem ad
+  `last_audit_at`-nál újabb bejegyzést. NE hasonlítsd `updated_at`-et `last_audit_at`-hoz --
+  egy komment azt is felülírja, amikor a kártya státusza NEM változott (lásd fent). NE
+  használj abszolút 24h-os küszöböt sem.
 - Ne archiválj done-t ha <7 nap (a felhasználó még látni akarja).
 - NE pingelj saját magadat (skip ha assignee='{{MAIN_AGENT_ID}}').
 - Ne re-pingelj 4 órán belül ugyanazt: a state-fájlban tárolt `last_audit_at` automatikusan kezeli ezt.
 - Első futáskor (state-fájl üres) -> ne pingelj, csak inicializáld a state-et.
-- A státuszváltozás (in_progress -> done) is updated_at frissítést jelent, így a következő audit nem fogja megfogni a most-még-aktív taskokat.
+- A státuszváltozás (in_progress -> done) `kanban_card_events` bejegyzést ír, így a
+  következő audit nem fogja megfogni a most-még-aktív taskokat -- de egy puszta komment
+  (nincs státuszváltás) nem ír ilyen bejegyzést, tehát nem tünteti el a kártyát a
+  beakadt-listáról. Ez a szándékolt viselkedés: a komment nem helyettesíti a valódi
+  előrehaladást.
 
 ## Ellenőrzés
 - A state-fájl frissült a futás végén.

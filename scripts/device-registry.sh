@@ -5,7 +5,7 @@
 #
 # HASZNALAT (TELEPITES ELoTT KOTELEZo):
 #   device-registry.sh check <id> [--repo <ut>]... [--path <alut>]... [--branch <nev>]
-#                                 [--apk <ut>] [--buildfile <ut>]
+#                                 [--apk <ut>] [--buildfile <ut>] [--require-apk]
 #         -> szabad-e telepiteni; exit 1 ha KERDEZNI kell
 #      --repo      ISMETELHEТo. Az APK tobb repobol is fordulhat (a JokerQ HAROMbol) -- ha egy
 #                  `ProjectReference` EGYIK megadott repoban sincs benne, az MERETLEN FUGGoSEG.
@@ -17,6 +17,11 @@
 #      --apk       a telepitendo csomag. A `versionCode`-ot (a csomag MANIFESTJEBoL) veti ossze a fa
 #                  build-szamaval. NEM az mtime-ot -- azt minden masolas atirja.
 #      --buildfile ha a build-szam nem az app-repo `BuildNumberV2.txt`-jeben all.
+#      --require-apk  TENYLEGES TELEPITESI DONTESHEZ KOTELEZO. `--apk` nelkul a `check --repo`
+#                  onmagaban is exit 0-t ad "APK: NEM MERVE" szoveggel (jo munkafa-allapot
+#                  ellenorzesre, ahol nincs telepitesi szandek) -- ez a hivo szandekat jelzi:
+#                  ha TELEPITENI akarsz, ezt add meg, es ha nincs `--apk`, a kapu HASZNALATI
+#                  HIBAVAL all meg meres elott, nem MEHET-tel.
 #   device-registry.sh list                                    -> minden eszkoz, egy sor
 #   device-registry.sh show <id>                               -> teljes bejegyzes
 #   device-registry.sh record <id> <agent> <package> <build>   -> telepites rogzitese (UTANA)
@@ -71,7 +76,7 @@ PY
     #     kodot szabad telepiteni") a COMMITRA vonatkozik, az APK viszont a MUNKAFABOL fordul.
     #     A kapu NEM tudja, MELYIK projekt fordul -- ezt a hivonak kell megadnia.
     DEV_ID=""; WANT_BRANCH="main"; HAS_PATH=0; PATHSPECS=(); REPOS=(); HAS_REPO=0
-    APK_PATH=""; HAS_APK=0; BUILDFILE=""
+    APK_PATH=""; HAS_APK=0; BUILDFILE=""; REQUIRE_APK=0
     # hu: A hasznalati hiba is VERDIKTTEL zarul. Enelkul, aki gepiesen olvassa
     #     (`grep "==> VERDIKT"`), egy elgepelt kapcsolora URES kimenetet kapna -- es az ures
     #     kimenet nem verdikt. Ugyanaz a lyuk, ami 2026-08-14-ig az ismeretlen-eszkoz agon allt.
@@ -92,12 +97,26 @@ PY
                   APK_PATH="$2"; HAS_APK=1; shift 2 ;;
         --buildfile) [ $# -ge 2 ] || usage_stop "a --buildfile ertek nelkul all (kell egy fajl-ut)."
                   BUILDFILE="$2"; shift 2 ;;
+        --require-apk) REQUIRE_APK=1; shift ;;
         -*)       usage_stop "ismeretlen kapcsolo: $1" ;;
         *)        [ -z "$DEV_ID" ] || usage_stop "egyszerre EGY eszkozt lehet ellenorizni ($DEV_ID es $1)."
                   DEV_ID="$1"; shift ;;
       esac
     done
     [ -n "$DEV_ID" ] || usage_stop "kell egy eszkoz-id/serial/ip."
+    # hu: 🛑 `--require-apk` -- A TENYLEGES TELEPITESI DONTES A HIVO SZANDEKAT JELZI.
+    #     A `--repo` NELKULI ag mar fail-closed (lasd feljebb, `HAS_REPO`), DE a `--repo`-VAL,
+    #     `--apk` NELKUL hivott `check` szandekosan MEHET-et ad "APK: NEM MERVE" szoveggel --
+    #     ez helyes munkafa-allapot ellenorzesnel (nincs telepitesi szandek). Ha viszont a hivo
+    #     EZT a valaszt telepitesi dontesre hasznalja, a NEM MERT allapot csendben atengedi a
+    #     telepitest -- UGYANAZ a hibaosztaly, mint a mar javitott --repo nelkuli ag.
+    #     A `--require-apk` a hivo altal KIMONDOTT szandek ("ez telepitesi dontes"): ha ekkor
+    #     nincs `--apk`, a kapu HASZNALATI HIBAVAL all meg, MERES ELOTT -- a `check --repo`-only
+    #     hasznalat (munkafa-allapot ellenorzes, `--require-apk` nelkul) valtozatlan marad.
+    #     (kartya: device-registry-check-apk-nelkul-fail-open-20260826)
+    if [ "$REQUIRE_APK" -eq 1 ] && [ "$HAS_APK" -eq 0 ]; then
+      usage_stop "--require-apk mellett az --apk KOTELEZO -- telepitesi dontest a kapu APK nelkul nem mondhat MEHET-nek. Adj meg egy --apk <ut>-at, vagy hagyd el a --require-apk-t, ha ez csak munkafa-allapot ellenorzes."
+    fi
 
     RESOLVED=""
     case "$DEV_ID" in
@@ -352,6 +371,53 @@ PY
       exit 1
     fi
 
+    # hu: *** A REPO-BUILD-STATE KIHUZASA A FELMENT CSOMAGBOL. ***
+    #     MERT HIANY (kartya #device-registry-record-repo-hash-20260826): a `record` eddig CSAK a
+    #     JokerQ versionCode-ot rogzitette. Egy UTOLAGOS olvaso nem tudta megkulonboztetni ket,
+    #     AZONOS JokerQ-szamu, de ELTERO QuantumAE/QCassa.MHMI tartalmu telepitest -- pontosan az a
+    #     rendeleti kockazat, amit a `check` mar HAROM hash-sel (jokerq/quantumae/qcassamhmi) mer.
+    #     Itt UGYANAZT a fajlt (`assets/repo-build-state.json`) huzzuk ki, de a KESZULEKEN FUTO
+    #     csomagbol -- ez a TENYLEGESEN futo build bizonyiteka, nem a helyi checkout allapota.
+    #     Ha a csomagban nincs (regi / nem JokerQ-konvencios build), a mezo EXPLICIT "NEM MERT" --
+    #     nem marad ki, nem ures. Ugyanaz az elv, mint a `check` kapuban (fail-closed jelzes,
+    #     de itt a `record` maga NEM all meg emiatt: a telepites bizonyitekat ez nem erintI).
+    # en: *** PULLING THE REPO-BUILD-STATE FROM THE INSTALLED PACKAGE. ***
+    #     MEASURED GAP: `record` so far only recorded the JokerQ versionCode. A LATER reader could
+    #     not tell apart two installs carrying the SAME JokerQ number but DIFFERENT QuantumAE/
+    #     QCassa.MHMI content. Same file (`assets/repo-build-state.json`) `check` already reads, but
+    #     pulled here from the package ACTUALLY RUNNING on the device -- evidence of what runs, not
+    #     of the local checkout. If the package lacks it (old / non-JokerQ-convention build), the
+    #     field is EXPLICITLY "NOT MEASURED" -- never omitted, never empty.
+    repo_state_json=""
+    if [ -n "${DEVICE_REPO_STATE_PROBE:-}" ]; then
+      echo "REPO-STATE MERo FELULIRVA: DEVICE_REPO_STATE_PROBE -- NEM keszulek-meres." >&2
+      repo_state_json="$(eval "$DEVICE_REPO_STATE_PROBE" 2>/dev/null)"
+    elif [ "$probe_kind" = "injektalt" ]; then
+      # hu: a versionCode-proba is injektalva volt -- nincs valodi eszkoz, tehat a csomag sem
+      #     huzhato le. Explicit NEM MERT, nem hallgatunk rola.
+      repo_state_json="MISSING"
+    else
+      GATE_PY="$(cd "$(dirname "$0")" && pwd -P)/device-registry-repo-gate.py"
+      remote_apk="$("$ADB" -s "$transport" shell pm path "$pkg" < /dev/null 2>/dev/null | sed -n 's/^package://p' | tr -d '\r\n')"
+      if [ -n "$remote_apk" ] && [ -f "$GATE_PY" ]; then
+        tmp_apk="$(mktemp "${TMPDIR:-/tmp}/device-apk-XXXXXX.apk")"
+        if "$ADB" -s "$transport" pull "$remote_apk" "$tmp_apk" >/dev/null 2>&1; then
+          repo_state_json="$(python3 - "$GATE_PY" "$tmp_apk" <<'PY'
+import importlib.util, json, sys
+gate_path, apk_path = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("device_registry_repo_gate", gate_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+state = mod._apk_extract_repo_build_state(apk_path)
+print("MISSING" if state is None else json.dumps(state))
+PY
+)"
+        fi
+        rm -f "$tmp_apk"
+      fi
+      [ -n "$repo_state_json" ] || repo_state_json="MISSING"
+    fi
+
     # hu: 🛑 ZAROLAS -- az utana kovetkezo olvas-modosit-ir ciklus (json.load -> append ->
     #     json.dump) ZAROLAS NELKUL last-write-wins bejegyzes-vesztest okoz egyideju hivasnal
     #     (kartya #830, ordog bukas-eloallitasa: 20 egyideju, egyenkent ervenyes hivasbol csak
@@ -375,9 +441,9 @@ PY
     done
     trap '__rc=$?; rmdir "$LOCKDIR" 2>/dev/null || true; exit $__rc' EXIT
 
-    python3 - "$REG" "$id" "$agent" "$pkg" "$build" "$(date '+%Y-%m-%d %H:%M:%S')" "$measured" "$probe_kind" <<'PY'
+    python3 - "$REG" "$id" "$agent" "$pkg" "$build" "$(date '+%Y-%m-%d %H:%M:%S')" "$measured" "$probe_kind" "$repo_state_json" <<'PY'
 import json,sys
-reg,id_,agent,pkg,build,now,measured,kind=sys.argv[1:9]
+reg,id_,agent,pkg,build,now,measured,kind,repo_state_raw=sys.argv[1:10]
 d=json.load(open(reg)); q=id_.lower()
 hit=next((x for x in d["devices"] if q in json.dumps(x).lower()), None)
 if not hit: print("nincs ilyen eszkoz:",id_); sys.exit(1)
@@ -397,6 +463,20 @@ if kind=="keszulek":
 else:
     entry["source"]="device-registry.sh record (INJEKTALT proba: DEVICE_VERSION_PROBE -- NEM keszulek-meres)"
     entry["injected_version_code"]=measured
+
+# hu: A `repo_build_state` MEZo EXPLICIT -- soha nem marad ki es soha nem ures. Ha a felmert
+#     csomagbol kihuzhato volt a harom repo (jokerq/quantumae/qcassamhmi) hash+dirty parja, az
+#     kerul be szerkezetesen; ha nem (regi/nem-JokerQ-konvencios build, vagy ervenytelen JSON), egy
+#     magyarazo string -- ugyanaz az elv, mint a `check` kapu fail-closed jelzeseinel.
+if repo_state_raw and repo_state_raw != "MISSING":
+    try:
+        entry["repo_build_state"]=json.loads(repo_state_raw)
+    except (ValueError, TypeError):
+        entry["repo_build_state"]=("NEM MERT -- a felmert csomagbol kihuzott repo-build-state "
+                                    "ERVENYTELEN JSON, feldolgozhatatlan.")
+else:
+    entry["repo_build_state"]=("NEM MERT -- assets/repo-build-state.json hianyzik a felmert "
+                                "csomagbol (regi vagy nem JokerQ-konvencios build).")
 
 hit.setdefault("last_installs",[]).append(entry)
 json.dump(d,open(reg,"w"),indent=2,ensure_ascii=False); open(reg,"a").write("\n")

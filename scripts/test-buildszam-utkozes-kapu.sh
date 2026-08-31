@@ -14,7 +14,8 @@
 
 set -uo pipefail
 
-CGate="$(cd "$(dirname "$0")" && pwd)/buildszam-utkozes-kapu.sh"
+CScriptDirForNode="$(cd "$(dirname "$0")" && pwd)"
+CGate="$CScriptDirForNode/buildszam-utkozes-kapu.sh"
 CRealRepo="$HOME/Source/github.com/QCassa.com/QuantumAE"
 
 FTmp=$(mktemp -d "${TMPDIR:-/tmp}/buildszam-kapu-teszt.XXXXXX")
@@ -562,6 +563,565 @@ if [ -d "$CRealRepo/.git" ]; then
 else
   echo "  ⚠️  T7 KIHAGYVA -- a QuantumAE repo nincs a helyen: $CRealRepo"
   echo "     (ez NEM zold: a valos eset merese elmaradt)"
+fi
+
+# ── T16: KONVENCIO-JELENTES -- KOZOS CONFIG A build-number-commit-gate.mjs-SZEL ──
+# hu: Kartya-komment 1928 (marveen): a kapu mondja ki, MELYIK konvenciot feltetelezi, es repo-szinten
+#     legyen kapcsolhato -- KOZOS forrasbol a build-number-commit-gate.mjs-szel, kulonben a hook ott
+#     is leptetest kenyszeritene, ahol ez a mero szerint nem is kell.
+echo
+echo "T16 -- konvencio-jelentes, kozos config a build-number-commit-gate.mjs-szel"
+
+R=$(new_repo t16 300)
+# hu: FELOLDOTT (symlink-mentes) utvonal -- a `git rev-parse --show-toplevel` (amit a node-os T16d
+#     a `gateDecision`-on keresztul hasznal) a VALODI utvonalat adja vissza, a bash oldal viszont a
+#     nyers --repo argumentumot illeszti. Feloldas nelkul a ket oldal MAS stringen mérne (pl. macOS
+#     /tmp -> /private/tmp), es T16d hamisan buktatna -- nem a kapun, hanem a teszt sajat utvonalan.
+#     A `gitq` fail-closed ore viszont a NYERS $R-re (FTmp-prefixre) van huzva, ezert a git-hivasok
+#     tovabbra is $R-t hasznaljak -- csak a config-mintat es a node-hivast erinti a feloldas.
+RReal=$(cd "$R" && pwd -P)
+
+# T16a: alapertelmezes -- a repo nem illeszkedik egyik override-ra sem.
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): minden-commit-leptet"; then
+  echo "  ✅ T16a alapertelmezett konvencio kiirva (minden-commit-leptet)"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16a nincs (vagy hibas) KONVENCIO sor az alapertelmezett configgal"; FFail=$((FFail + 1))
+  echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T16b: SAJAT config, override a repora -- a kapcsolo tenyleg olvashato kivulrol.
+FCustomConv="$FTmp/t16-conventions.json"
+cat > "$FCustomConv" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"repoPathPattern": "$(printf '%s' "$R" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+OUT=$(BSZ_CONVENTIONS_PATH="$FCustomConv" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): kiadasonkent-leptet"; then
+  echo "  ✅ T16b egyedi config override-ja atveve (kiadasonkent-leptet)"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16b az egyedi config override-ja NEM ervenyesult"; FFail=$((FFail + 1))
+  echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T16c: A SAJAT config OLVASHATATLAN -- fail-safe, a mai (mar ervenyben levo) konvenciora esik
+#       vissza, NEM ad hibat es NEM tagitja a hatokort.
+OUT=$(BSZ_CONVENTIONS_PATH="$FTmp/nincs-ilyen-fajl.json" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): minden-commit-leptet"; then
+  echo "  ✅ T16c olvashatatlan config -> fail-safe alapertelmezes"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16c olvashatatlan config eseten NEM a fail-safe alapertelmezes jott ki"; FFail=$((FFail + 1))
+  echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T16d: UGYANAZ a config, a MASIK kapu (build-number-commit-gate.mjs) IS ugyanazt a dontest hozza --
+#       a ket mechanizmus nem csuszhat szet. Nem-release agon a hook amugy sem tiltana, ezert
+#       a "main"-en, staged forrassal, BuildNumberV2.txt NELKUL merunk: minden-commit-leptet alatt
+#       ez TILTVA lenne, kiadasonkent-leptet alatt ENGEDVE.
+#       A .mjs a `git rev-parse --show-toplevel`-lel szamitja a repoRoot-ot, ami FELOLDJA a
+#       symlinkeket -- ezert a mintat $RReal-re epitjuk, nem a nyers $R-re (FCustomConv az).
+FCustomConvReal="$FTmp/t16-conventions-real.json"
+cat > "$FCustomConvReal" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"repoPathPattern": "$(printf '%s' "$RReal" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+if command -v node >/dev/null 2>&1; then
+  echo "class X {}" > "$R/Src.cs"
+  gitq "$R" add Src.cs
+  NODE_OUT=$(cd "$R" && BUILD_NUMBER_CONVENTIONS_PATH="$FCustomConvReal" node -e '
+    import("'"$CScriptDirForNode"'/build-number-commit-gate.mjs").then(({ gateDecision }) => {
+      const r = gateDecision("Bash", { command: "git commit -m x" }, process.cwd())
+      console.log(r.deny ? "DENY" : "ALLOW")
+    })
+  ' 2>&1)
+  if echo "$NODE_OUT" | grep -q "^ALLOW$"; then
+    echo "  ✅ T16d a masik kapu (build-number-commit-gate.mjs) UGYANAZT a configot koveti (ALLOW)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T16d a ket kapu szetcsuszott -- a .mjs nem ALLOW-ot adott ugyanarra a configra"
+    FFail=$((FFail + 1))
+    echo "$NODE_OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T16d KIHAGYVA -- nincs node a PATH-on"
+fi
+
+# T16e/f/g: FUGGETLEN ATMERES (ordog, kartya-komment 3861) -- HAROM fail-open a config-olvasasban.
+#   1. hianyzo repoPathPattern -> a regex NEM illeszkedhet MINDENRE (a Python `re.search(None, ..)`
+#      TypeErrort dob, ami a bash oldalon URES ertekkent latszott -- itt annak kell latszania, hogy a
+#      szabaly KIMARAD, es a config tobbi resze (defaultConvention) ervenyesul).
+#   2. ervenytelen regex -- nem eshet ki csendben URES ertekkel.
+#   3. A KET OLDAL (bash/python es node/JS) UGYANARRA a torott configra UGYANAZT a dontest hozza --
+#      a regex-nyelvtan eltéreseik ellenere is, mert a validacio a hasznalat ELOTT szuri ki oket.
+echo
+echo "T16e/f/g -- fuggetlen atmeres: fail-open a config-olvasasban (ordog, 3861)"
+
+# 🛑 A TORT SZABALY konvencioja SZANDEKOSAN egyezik a defaultConvention-nel, a MASODIK, ervenyes
+#    szabalye pedig a MASIK ertek -- ez az, ami megkulonbozteti a "kihagyja a torott szabalyt, es
+#    tovabb keres" viselkedest MINDKET ismert hibatol: (1) a torott szabaly hamisan mindenre
+#    illeszkedik es a SAJAT (=default-dal azonos) konvenciojat adja vissza, (2) egy kivetel a
+#    torott szabalynal a legfelso fail-safe-re esik (SZINTEN a default-ot adja) -- MIELoTT a
+#    masodik szabaly egyaltalan sorra kerulne. Csak a helyes viselkedes jut el a masodik szabalyig,
+#    es CSAK az ad "kiadasonkent-leptet"-et.
+FBrokenPattern="$FTmp/t16-broken-pattern.json"
+cat > "$FBrokenPattern" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"convention": "minden-commit-leptet"},
+               {"repoPathPattern": "$(printf '%s' "$R" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+OUT=$(BSZ_CONVENTIONS_PATH="$FBrokenPattern" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): kiadasonkent-leptet"; then
+  echo "  ✅ T16e hianyzo repoPathPattern -> KIMARAD, a KESoBBI ervenyes szabaly ervenyesul"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16e hianyzo repoPathPattern eseten a szabaly nem a vart modon maradt ki"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+FInvalidRegex="$FTmp/t16-invalid-regex.json"
+cat > "$FInvalidRegex" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"repoPathPattern": "(", "convention": "minden-commit-leptet"},
+               {"repoPathPattern": "$(printf '%s' "$R" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+OUT=$(BSZ_CONVENTIONS_PATH="$FInvalidRegex" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): kiadasonkent-leptet"; then
+  echo "  ✅ T16f ervenytelen regex -> KIHAGYVA, a KESoBBI ervenyes szabaly ervenyesul"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16f ervenytelen regex eseten a szabaly nem a vart modon maradt ki"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T16g: a KET OLDAL ugyanarra a hianyos configra UGYANAZT donti -- a node-os oldal ne dobjon,
+#       es NE tekintse a hianyzo mintat mindenre-illeszkedonek.
+#       🛑 ordog masodik atmerese (kartya-komment 3865): a FBrokenPattern (nyers $R, a TMPDIR zaro
+#       perjele miatt DUPLA perjelet visel) SOSEM illeszkedik a node oldal FELOLDOTT ($RReal
+#       -alapu) utvonalara -- a "kesobbi ervenyes szabaly" ag itt SOHA nem futott le, es a torott
+#       szabaly sajat konvencioja (minden-commit-leptet) EGYBEESETT a defaulttal, ezert a teszt vak
+#       volt a sajat targyara: a tipus-ellenorzes visszavetele (a mutans) IS ugyanazt a DENY-t adta.
+#       Javitva: a mintat $RReal-re epitjuk (ugyanarra, amit a .mjs a `git rev-parse
+#       --show-toplevel`-lel szamit), es a VART EREDMENY ALLOW -- ezt CSAK a "kihagyja a torott
+#       szabalyt, tovabb keres a masodikra" viselkedes adja, a match-all hiba nem (az a rule1 SAJAT,
+#       default-dal azonos konvenciojara esne, ami DENY maradna).
+if command -v node >/dev/null 2>&1; then
+  FBrokenPatternReal="$FTmp/t16-broken-pattern-real.json"
+  cat > "$FBrokenPatternReal" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"convention": "minden-commit-leptet"},
+               {"repoPathPattern": "$(printf '%s' "$RReal" | sed 's/[\\/&]/\\\\&/g')", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+  echo "class Y {}" > "$R/Src2.cs"
+  gitq "$R" add Src2.cs
+  NODE_OUT=$(cd "$R" && BUILD_NUMBER_CONVENTIONS_PATH="$FBrokenPatternReal" node -e '
+    import("'"$CScriptDirForNode"'/build-number-commit-gate.mjs").then(({ gateDecision }) => {
+      const r = gateDecision("Bash", { command: "git commit -m x" }, process.cwd())
+      console.log(r.deny ? "DENY" : "ALLOW")
+    })
+  ' 2>&1)
+  if echo "$NODE_OUT" | grep -q "^ALLOW$"; then
+    echo "  ✅ T16g a hianyos elso szabaly KIMARAD, a masodik (RReal-re illeszkedo) ervenyesul (ALLOW)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T16g a masik kapu (.mjs) nem a masodik, ervenyes szabalyt alkalmazta"
+    FFail=$((FFail + 1)); echo "$NODE_OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T16g KIHAGYVA -- nincs node a PATH-on"
+fi
+
+# T16h/i: FUGGETLEN ATMERES, MASODIK KOR (ordog, kartya-komment 3861, 3. lelet / kartya #1085,
+#         B pont; Marveen dontes 3871, 2. pont) -- python `re` es JS RegExp NEM ugyanaz a nyelvtan.
+#         `(?<x>...)` ERVENYES JS nevesitett-csoport szintaxis, de a pythonnak NINCS ilyen alakja
+#         (csak `(?P<x>...)` -- `re.error`-t dob). A HIBA ELoTT ez CSENDES szetcsuszast okozott: a
+#         node oldal LEFORDITOTTA es ILLESZKEDETT ra (ALLOW/kiadasonkent-leptet), a bash oldal
+#         KIVETELT kapott es KIHAGYTA (DENY/minden-commit-leptet) -- nem crash egyik oldalon sem,
+#         csak ELLENTETES dontes UGYANARRA a szabalyra. A ketoldali validator (uses_only_common_
+#         regex_subset / usesOnlyCommonRegexSubset) most MINDKET oldalon KIHAGYJA -- a szabaly nem
+#         alkalmazhato, a default (minden-commit-leptet) ervenyesul mindket oldalon.
+echo
+echo "T16h/i -- fuggetlen atmeres, 2. kor: regex-nyelvtan elteres (?<x>...) mindket oldalon kihagyva"
+
+FNamedGroupReal="$FTmp/t16-named-group-real.json"
+cat > "$FNamedGroupReal" <<JSONEOF
+{"defaultConvention": "minden-commit-leptet",
+ "overrides": [{"repoPathPattern": "(?<x>$(printf '%s' "$RReal" | sed 's/[\\/&]/\\\\&/g'))", "convention": "kiadasonkent-leptet"}]}
+JSONEOF
+
+OUT=$(BSZ_CONVENTIONS_PATH="$FNamedGroupReal" bash "$CGate" --repo "$R" 2>&1)
+if echo "$OUT" | grep -q "KONVENCIO ($R): minden-commit-leptet"; then
+  echo "  ✅ T16h bash oldal: (?<x>...) KIHAGYVA, a defaultConvention ervenyesul"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T16h bash oldal a (?<x>...) szabalyt hibasan alkalmazta (nem esett vissza a defaultra)"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+if command -v node >/dev/null 2>&1; then
+  echo "class Z {}" > "$R/Src3.cs"
+  gitq "$R" add Src3.cs
+  NODE_OUT=$(cd "$R" && BUILD_NUMBER_CONVENTIONS_PATH="$FNamedGroupReal" node -e '
+    import("'"$CScriptDirForNode"'/build-number-commit-gate.mjs").then(({ gateDecision }) => {
+      const r = gateDecision("Bash", { command: "git commit -m x" }, process.cwd())
+      console.log(r.deny ? "DENY" : "ALLOW")
+    })
+  ' 2>&1)
+  if echo "$NODE_OUT" | grep -q "^DENY$"; then
+    echo "  ✅ T16i node oldal: (?<x>...) UGYANUGY kihagyva -- DENY (a ket oldal MOST egyet ert)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T16i node oldal LEFORDITOTTA es ILLESZKEDETT a (?<x>...) mintara -- a ket oldal szetcsuszott"
+    FFail=$((FFail + 1)); echo "$NODE_OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T16i KIHAGYVA -- nincs node a PATH-on"
+fi
+
+# T16j: MUTACIO -- a ketoldali validator NELKUL a T16h/i-nek buknia kell (a bash oldal is
+#       KIVETELT kapna a (?<x>...)-en, ami korabban ugyan szinten skip-hez vezetett a legkulso
+#       except-tel -- de a mutacio itt a NODE oldalt teszi vakka: uses_only_common_regex_subset
+#       nelkul a JS oldal LEFORDITANA es ILLESZKEDNE, ami T16i-t PIROSRA valtja).
+echo
+echo "T16j -- MUTACIO: usesOnlyCommonRegexSubset nelkul a node oldal (T16i) visszaesik"
+if command -v node >/dev/null 2>&1; then
+  NODE_OUT=$(cd "$R" && BUILD_NUMBER_CONVENTIONS_PATH="$FNamedGroupReal" node -e '
+    import("'"$CScriptDirForNode"'/build-number-commit-gate.mjs").then(({ gateDecision }) => {
+      // Mutans: a validator nelkuli regi viselkedes szimulalasa -- kozvetlenul a RegExp-et hasznaljuk.
+      const fs = require("node:fs")
+      const cfg = JSON.parse(fs.readFileSync(process.env.BUILD_NUMBER_CONVENTIONS_PATH, "utf-8"))
+      const norm = process.cwd().replace(/\\/g, "/")
+      const rule = cfg.overrides[0]
+      const matched = new RegExp(rule.repoPathPattern).test(norm)
+      console.log(matched ? "MATCHED-WITHOUT-VALIDATOR" : "NOT-MATCHED")
+    })
+  ' 2>&1)
+  if echo "$NODE_OUT" | grep -q "^MATCHED-WITHOUT-VALIDATOR$"; then
+    echo "  ✅ T16j igazolva: validator nelkul a JS oldal ILLESZKEDNE -- a T16i zoldje a validatoron mulik"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T16j a mutacio nem fogott -- a (?<x>...) validator nelkul sem illeszkedne, T16i nem bizonyit semmit"
+    FFail=$((FFail + 1)); echo "$NODE_OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T16j KIHAGYVA -- nincs node a PATH-on"
+fi
+
+# ── T17: WORKTREE ELAVULT, EGYENES OSE A FoAGNAK -- NEM UTKOZES ──────────────
+# 🛑 MERT ESET (kartya ec51fef8 / #1241, ordog merese): QuantumAE kamera-valto-szkenneles
+#    worktree (52a8dd1f) a fo ag HEAD-jenek (akkor 950ba836) EGYENES ose, ket koztes commit
+#    egyike sem leptette a szamot -- a regi kapu ezt VALODI utkozeskent jelezte, holott a
+#    worktree csak nem huzta be a fo ag azota erkezett munkajat.
+echo
+echo "T17 -- fo ag elore lep, elmaradt worktree UGYANAZZAL a szammal -> NEM utkozes"
+R=$(new_repo t17 500)
+gitq "$R" worktree add -q --detach "$FTmp/t17-stale" HEAD >/dev/null 2>&1
+echo "fo agi munka" > "$R/fomunka.txt"
+gitq "$R" add fomunka.txt
+gitq "$R" commit -q -m "feat: fo ag halad, a szamot NEM lepteti (build 500 marad)"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T17a fo ag elore, elmaradt worktree AZONOS szammal -> NEM utkozes" ZOLD "WORKTREE-UTKOZES" "$OUT"
+
+# 🛑 KONTROLL, FORDITOTT IRANY (ugyanaz a szerkezet, mint T12b -- ez az uj kod melletti,
+#    kozvetlen regressziovedelem): itt a WORKTREE lep elore a fo agtol FUGGETLEN, SAJAT munkaval,
+#    a fo ag marad az os -- ennek TOVABBRA IS utkozeskent kell jeleznie, mert a kizaras csak akkor
+#    all, ha a FoAG az, amelyik elore lepett.
+echo
+echo "T17b KONTROLL -- forditva: a WORKTREE lep elore a fo agtol, ez UTKOZES marad"
+R2=$(new_repo t17b 500)
+gitq "$R2" worktree add -q --detach "$FTmp/t17b-elore" HEAD >/dev/null 2>&1
+echo "worktree sajat munkaja" > "$FTmp/t17b-elore/wtfile.txt"
+gitq "$FTmp/t17b-elore" add wtfile.txt
+gitq "$FTmp/t17b-elore" commit -q -m "feat: a WORKTREE lep elore, a szamot NEM lepteti (build 500 marad)"
+OUT=$(bash "$CGate" --repo "$R2" 2>&1)
+expect "T17b worktree elore, fo ag elmaradva -> UTKOZES marad" PIROS "WORKTREE-UTKOZES" "$OUT"
+
+# ── T18: REFERENCIAPONT -- CSAK A BEVEZETES UTANI LELET BLOKKOL ──────────────
+# 🛑 MERT ESET (kartya ec51fef8 / #1241): a kapu 2026-08-31-i bevezetese a TELJES tortenetet
+#    vizsgalja, ez mar beegett, tortenelmi inkonzisztenciakon is LELETET (rc=1) adott -- a `wt done`
+#    minden hivast blokkolt, orokre (a tortenet nem valtoztathato meg). A helyes viselkedes: a
+#    referenciapont ELoTTI lelet TOVABBRA IS KIIRODIK (lathato marad), de nem allitja meg a hivot;
+#    csak egy a referenciaponton VAGY UTANA szuletett, FRISS lelet blokkoljon.
+echo
+echo "T18 -- referenciapont: a bevezetes ELoTTI lelet jelentve, DE NEM blokkol"
+bump_dated() {   # dir ertek cim datum(YYYY-MM-DD)
+  echo "$2" > "$1/BuildNumberV2.txt"
+  gitq "$1" add BuildNumberV2.txt
+  GIT_AUTHOR_DATE="${4}T10:00:00" GIT_COMMITTER_DATE="${4}T10:00:00" gitq "$1" commit -q -m "$3"
+}
+
+R=$(new_repo t18 100)
+bump_dated "$R" 200 "feat: lepteti (build 200)" "2026-06-01"
+bump_dated "$R" 150 "feat: REGI csokkenes, a referenciapont elott (build 150)" "2026-06-02"
+bump_dated "$R" 300 "feat: lepteti (build 300)" "2026-06-03"
+
+CRef="2026-08-31"
+OUT=$(BSZ_REFERENCE_DATE="$CRef" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T18a a regi csokkenes TOVABBRA IS kiirodik" PIROS "A BUILD-SZAM CSOKKENT" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T18b a KIZAROLAG regi lelet NEM blokkol (RC=0, vart: 0)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T18b RC=$RC, 0 lenne a helyes (a regi lelet nem blokkolhat)"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# UJ, FRISS regresszio A REFERENCIAPONTON UTAN -- ennek blokkolnia kell
+bump_dated "$R" 250 "feat: FRISS csokkenes, a referenciapont UTAN (build 250)" "2026-09-01"
+OUT=$(BSZ_REFERENCE_DATE="$CRef" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T18c a friss csokkenes is kiirodik" PIROS "A BUILD-SZAM CSOKKENT" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T18d a FRISS (referenciapont utani) lelet BLOKKOL (RC=1, vart: 1)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T18d RC=$RC, 1 lenne a helyes (a friss regresszionak blokkolnia kell)"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# ── T19: CIM-DETEKTOR POZITIV HORGONY -- CSAK SAJAT KIHIRDETES BLOKKOL ───────
+# 🛑 MERT ESET (kartya ec51fef8 / #1241, marveen/clicpu/sajat meres): a QuantumAE 8c457ec6 cime
+#    egy MASIK repo (JokerQ) buildjere hivatkozik ("... (build 741 utan is)"), a horgony NELKULI
+#    minta ezt SAJAT kihirdetesnek nezte es hamis "CIM ELTER" leletet adott.
+echo
+echo "T19 -- cim-detektor: csak a cim ELEJEN allo, ismert elotagu 'build NNN' szamit"
+R=$(new_repo t19 1077)
+echo "x" > "$R/x.txt"; gitq "$R" add x.txt
+gitq "$R" commit -q -m "#811 47f6f4a3 JokerQ/A36: TQaeActor sosem er keszenletbe 15 mp alatt (build 741 utan is)"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T19a masik repora hivatkozo cim NEM cim-elteres" ZOLD "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
+
+# 🛑 KONTROLL, HAROM ISMERT VALODI ESET (a fejlec sajat dokumentalt talalatai) -- ezeknek
+#    TOVABBRA IS jelezniuk kell, kulonben a horgony tul szuk.
+echo
+echo "T19b/c/d KONTROLL -- a HAROM ismert valodi eset tovabbra is illeszkedik"
+R=$(new_repo t19bcd 1)
+echo "x" > "$R/x.txt"; gitq "$R" add x.txt
+gitq "$R" commit -q -m "feat: build 11 - PIN TEE tarolas, UI hardening, kiosk kill switch"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T19b feat: build N (QCassa 4b5ea94 mintaja)" PIROS "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
+
+R=$(new_repo t19c 1)
+echo "x" > "$R/x.txt"; gitq "$R" add x.txt
+gitq "$R" commit -q -m "feat: build 10 - USB Loader: pendrive auto-detect"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T19c feat: build N (QCassa cfde0b4 mintaja)" PIROS "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
+
+R=$(new_repo t19d 1)
+echo "x" > "$R/x.txt"; gitq "$R" add x.txt
+gitq "$R" commit -q -m "merge: main (build 728, sqlite-bionic asset) -> feat/plugin-tee-decryptor"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T19d merge: ... build N (JokerQ 5af6597 mintaja)" PIROS "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
+
+# ── T20: REFERENCIAPONT MASODPERC-PONTOSSAGA -- UGYANAZON A NAPON, DE KORABBAN ───
+# 🛑 MERT ESET (vaszon merese, ec51fef8 utolagos hataresete): a T18 nap-pontossagu
+#    (`--date=short`) hatarral dolgozott, es minden szintetikus commitja KULONBOZO napon szuletett
+#    -- a hataresetet (UGYANAZON a napon, de a referenciapont ORAJA ELoTT) NEM fedte le. A valos
+#    QuantumAE-eset: `78071c54` 2026-08-31 00:51-kor, a kapu tenyleges bevezetese (`7bf014f`)
+#    viszont csak 15:08-kor -- a nap-pontossagu osszehasonlitas ezt "referenciapont utaninak"
+#    latta es TOVABBRA IS blokkolt.
+bump_at() {   # dir ertek cim iso-idobelyeg(pl. 2026-08-31T00:51:00+02:00)
+  echo "$2" > "$1/BuildNumberV2.txt"
+  gitq "$1" add BuildNumberV2.txt
+  GIT_AUTHOR_DATE="$4" GIT_COMMITTER_DATE="$4" gitq "$1" commit -q -m "$3"
+}
+
+# hu: UGYANAZT az erteket viszi tovabb (pl. [deploy] kiserocommit), DE VALODI diffet keszit --
+#     kulonben a `git commit` "nothing to commit"-tel csendben NEM hozna letre a commitot, es a
+#     hivo egy KORABBI commit SHA-jat kapna vissza, nem egy ujat.
+companion_at() {   # dir cim iso-idobelyeg
+  echo "kiserojegyzet $3" >> "$1/deploy-note.txt"
+  gitq "$1" add deploy-note.txt
+  GIT_AUTHOR_DATE="$3" GIT_COMMITTER_DATE="$3" gitq "$1" commit -q -m "$2"
+}
+
+echo
+echo "T20 -- referenciapont: masodperc-pontossag, nem nap-pontossag"
+R=$(new_repo t20 100)
+bump_at "$R" 200 "feat: lepteti (build 200)" "2026-08-30T23:00:00+02:00"
+bump_at "$R" 150 "feat: csokkenes UGYANAZON a napon, A REFERENCIAPONT ORAJA ELoTT (build 150)" "2026-08-31T00:51:00+02:00"
+
+CRef="2026-08-31T15:08:25+02:00"
+OUT=$(BSZ_REFERENCE_DATE="$CRef" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T20a a napon-belul-korabbi csokkenes TOVABBRA IS kiirodik" PIROS "A BUILD-SZAM CSOKKENT" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T20b UGYANAZON a napon, de a referenciapont ORAJA ELoTT szuletett lelet NEM blokkol (RC=0)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T20b RC=$RC, 0 lenne a helyes -- nap-pontossagu osszehasonlitas hamisan blokkolna"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# UJ regresszio UGYANAZON a napon, DE A REFERENCIAPONT ORAJA UTAN -- ennek TOVABBRA IS blokkolnia kell
+bump_at "$R" 120 "feat: csokkenes UGYANAZON a napon, A REFERENCIAPONT ORAJA UTAN (build 120)" "2026-08-31T16:00:00+02:00"
+OUT=$(BSZ_REFERENCE_DATE="$CRef" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T20c a napon-belul-kesobbi csokkenes is kiirodik" PIROS "A BUILD-SZAM CSOKKENT" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T20d ugyanazon a napon, a referenciapont oraja UTANI lelet TOVABBRA IS blokkol (RC=1)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T20d RC=$RC, 1 lenne a helyes"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# hu: a PRODUKCIOS ALAPERTEK (BSZ_REFERENCE_DATE nelkul) is 7bf014f SAJAT idopontjat hasznalja --
+#     ugyanaz a repo, override NELKUL, ugyanugy NEM blokkol a nap-korai csokkenesre.
+echo
+echo "T20e -- a PRODUKCIOS alapertek (nincs BSZ_REFERENCE_DATE) is masodperc-pontos"
+R2=$(new_repo t20e 100)
+bump_at "$R2" 200 "feat: lepteti (build 200)" "2026-08-30T23:00:00+02:00"
+bump_at "$R2" 150 "feat: csokkenes UGYANAZON a napon, A REFERENCIAPONT ORAJA ELoTT (build 150)" "2026-08-31T00:51:00+02:00"
+OUT=$(bash "$CGate" --repo "$R2" 2>&1); RC=$?
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T20f a produkcios alapertek szerint sem blokkol a nap-korai csokkenes (RC=0)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T20f RC=$RC, 0 lenne a helyes -- a produkcios alapertek meg nap-pontossagu"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# ── T21 (MUTACIO): a masodperc-pontossag visszavetele -> a T20b BUKJON vissza ────
+echo
+echo "T21 -- MUTACIO: nap-pontossagra (--date=short) visszaallitva, a T20b visszajon"
+FMutantRef="$FTmp/mutans-refdatum.sh"
+python3 - "$CGate" "$FMutantRef" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+old_log = '"log", "--format=%H|%P|%ct|%s", *CDepthArgs, "HEAD"'
+new_log = '"log", "--format=%H|%P|%cd|%s", "--date=short", *CDepthArgs, "HEAD"'
+old_dict = 'commit_date = {sha: int(date) for sha, _, date, _ in commits if date.isdigit()}'
+new_dict = 'commit_date = {sha: date for sha, _, date, _ in commits}'
+old_blocks = 'return commit_date.get(sha, 0) >= CReferenceEpoch'
+new_blocks = 'return commit_date.get(sha, "") >= "2026-08-31"'
+text = text.replace(old_log, new_log, 1).replace(old_dict, new_dict, 1).replace(old_blocks, new_blocks, 1)
+open(dst, 'w').write(text)
+PYEOF
+if cmp -s "$CGate" "$FMutantRef" 2>/dev/null; then
+  echo "  ⚠️  T21 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  R3=$(new_repo t21 100)
+  bump_at "$R3" 200 "feat: lepteti (build 200)" "2026-08-30T23:00:00+02:00"
+  bump_at "$R3" 150 "feat: csokkenes UGYANAZON a napon, A REFERENCIAPONT ORAJA ELoTT (build 150)" "2026-08-31T00:51:00+02:00"
+  OUT=$(bash "$FMutantRef" --repo "$R3" 2>&1); RC=$?
+  if [ "$RC" -eq 1 ]; then
+    echo "  ✅ T21 mutansnal a nap-korai csokkenes IS blokkol (a T20b visszajon)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T21 mutansnal RC=$RC, 1 lenne a vart -- a mutacio nem hozta vissza a hibat"
+    FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+  fi
+fi
+
+# ── T22-T24: PARHUZAMOS AGAK -- A VISSZATERES-DETEKTOR LESZARMAZAS-TUDATOSSAGA ───
+# 🛑 MERT ESET (kartya 8ce3fb7b, avalonia+marveen merese, JokerQ main klon 2026-08-31): ket
+#    FUGGETLEN ag KOZOS elodbol elagazva, mindketto SAJAT maga leptet (4b38f2a->941, 0b3d202->942,
+#    mindketto az 940-es szuloboli) -- a REGI, flat datum-sorrendi bejaras hamis "visszateres"-t
+#    adott, mert a kesobb szuletett, DE a 941-et OROKLo bbc0a73 commit a datum-sorrendben a 942
+#    UTAN allt. A KIADAS-DUPLIKATUM detektor (sorrend-fuggetlen) NEM latta ezt duplikatumkent --
+#    fuggetlen bizonyitek, hogy a lelet HAMIS volt.
+merge_at() {   # dir ertek cim iso-idobelyeg parent1 parent2  ->  stdout: az uj commit SHA-ja
+  local dir="$1" val="$2" msg="$3" dt="$4" p1="$5" p2="$6" tree sha
+  git -C "$dir" checkout -q "$p1"
+  echo "$val" > "$dir/BuildNumberV2.txt"
+  gitq "$dir" add BuildNumberV2.txt
+  tree=$(git -C "$dir" write-tree)
+  sha=$(GIT_AUTHOR_DATE="$dt" GIT_COMMITTER_DATE="$dt" git -C "$dir" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit-tree "$tree" -p "$p1" -p "$p2" -m "$msg")
+  git -C "$dir" update-ref refs/heads/main "$sha"
+  git -C "$dir" checkout -q main
+  echo "$sha"
+}
+
+echo
+echo "T22 -- ket FUGGETLEN ag KOZOS elodbol, interlacelo datummal -> NEM valodi visszateres"
+R=$(new_repo t22 100)
+FBase=$(git -C "$R" rev-parse HEAD)
+
+git -C "$R" checkout -q -b branchA "$FBase"
+bump_at "$R" 200 "feat: A ag lepteti (build 200)" "2026-08-31T10:00:00+02:00"
+FA=$(git -C "$R" rev-parse HEAD)
+
+git -C "$R" checkout -q -b branchB "$FBase"
+bump_at "$R" 201 "feat: B ag lepteti (build 201)" "2026-08-31T11:00:00+02:00"
+FB=$(git -C "$R" rev-parse HEAD)
+
+# hu: az A ag KISERo commitja -- ertek VALTOZATLAN (200), DE keSoBB szuletik, mint a B ag -- ez
+#     okozza a flat bejarasnal a hamis leletet.
+git -C "$R" checkout -q branchA
+companion_at "$R" "chore: A ag kiserokomment, ertek valtozatlan (build 200) [deploy]" "2026-08-31T12:00:00+02:00"
+FC=$(git -C "$R" rev-parse HEAD)
+
+FM=$(merge_at "$R" 202 "merge: A+B agak egyesitve, uj szammal (build 202)" "2026-08-31T13:00:00+02:00" "$FC" "$FB")
+
+OUT=$(BSZ_REFERENCE_DATE="2026-08-31T09:00:00+02:00" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T22a a 200-as ertek NEM szamit visszaternek" ZOLD "VISSZATERo BUILD-SZAM" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T22b a kilepesi kod 0 (nincs valodi utkozes)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T22b RC=$RC, 0 lenne a helyes"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+echo
+echo "T23 KONTROLL -- valodi visszateres UGYANAZON a lancolaton TOVABBRA IS lelet"
+git -C "$R" checkout -q main
+bump_at "$R" 200 "hiba: UJRA kiadja a mar hasznalt 200-at, UGYANAZON a lancolaton (build 200)" "2026-08-31T14:00:00+02:00"
+OUT=$(BSZ_REFERENCE_DATE="2026-08-31T09:00:00+02:00" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T23a a sajat lancolaton belul valodi visszateres LATSZIK" PIROS "VISSZATERo BUILD-SZAM" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T23b a kilepesi kod 1 (a valodi visszateres tovabbra is blokkol)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T23b RC=$RC, 1 lenne a helyes"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+echo
+echo "T24 -- MUTACIO: a leszarmazas-tudatos bejaras visszaallitva flat/datum-sorrendire, T22 visszajon"
+FMutantDesc="$FTmp/mutans-leszarmazas.sh"
+python3 - "$CGate" "$FMutantDesc" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+start = "parent_map = {sha: parents for sha, parents, _, _ in commits}\n"
+end = "checked_commits = 0\n"
+si, ei = text.find(start), text.find(end)
+if si != -1 and ei != -1 and si < ei:
+    replacement = "returning = []          # [(sha, value), ...]\nseen_values = set()\nprev = None\n\n"
+    new_text = text[:si] + replacement + text[ei:]
+    marker = "    checked_commits += 1\n\n    # (b) KIADAS-DUPLIKATUM"
+    old_a = (
+        "    checked_commits += 1\n\n"
+        "    if v != prev:\n"
+        "        if v in seen_values and v not in [rv for _, rv in returning]:\n"
+        "            returning.append((sha, v))\n"
+        "        seen_values.add(v)\n"
+        "    prev = v\n\n"
+        "    # (b) KIADAS-DUPLIKATUM"
+    )
+    if marker in new_text:
+        new_text = new_text.replace(marker, old_a, 1)
+        open(dst, 'w').write(new_text)
+PYEOF
+if [ ! -s "$FMutantDesc" ] || cmp -s "$CGate" "$FMutantDesc" 2>/dev/null; then
+  echo "  ⚠️  T24 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  R2=$(new_repo t24 100)
+  FBase2=$(git -C "$R2" rev-parse HEAD)
+  git -C "$R2" checkout -q -b branchA "$FBase2"
+  bump_at "$R2" 200 "feat: A ag lepteti (build 200)" "2026-08-31T10:00:00+02:00"
+  FA2=$(git -C "$R2" rev-parse HEAD)
+  git -C "$R2" checkout -q -b branchB "$FBase2"
+  bump_at "$R2" 201 "feat: B ag lepteti (build 201)" "2026-08-31T11:00:00+02:00"
+  FB2=$(git -C "$R2" rev-parse HEAD)
+  git -C "$R2" checkout -q branchA
+  companion_at "$R2" "chore: A ag kiserokomment, ertek valtozatlan (build 200) [deploy]" "2026-08-31T12:00:00+02:00"
+  FC2=$(git -C "$R2" rev-parse HEAD)
+  merge_at "$R2" 202 "merge: A+B agak egyesitve, uj szammal (build 202)" "2026-08-31T13:00:00+02:00" "$FC2" "$FB2" >/dev/null
+  OUT=$(BSZ_REFERENCE_DATE="2026-08-31T09:00:00+02:00" bash "$FMutantDesc" --repo "$R2" 2>&1); RC=$?
+  if [ "$RC" -eq 1 ]; then
+    echo "  ✅ T24 mutansnal a hamis visszateres IS jelentkezik (a T22 visszajon)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T24 mutansnal RC=$RC, 1 lenne a vart -- a mutacio nem hozta vissza a hibat"
+    FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+  fi
 fi
 
 # ── Osszegzes ─────────────────────────────────────────────────────────────────

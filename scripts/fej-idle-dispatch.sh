@@ -16,6 +16,31 @@ cd "$(dirname "$0")/.."
 TOKEN=$(cat store/.dashboard-token)
 DB=store/claudeclaw.db
 
+# 🛑 A FEJ SAJAT, ZARTAN DEKLARALT SZAKTERULETE -- csak azok a fejek szerepelnek itt, akiknek a
+#    sajat agents/<fej>/CLAUDE.md-je EGY ZART, felsorolt repo-halmazt deklaral ("negy repo",
+#    "NEM a tied: X/Y/Z"). Ures visszateres = nincs korlatozas (a fej tobb projektet is szolgal).
+fej_sajat_projektek() {
+  case "$1" in
+    backend) echo "Marveen" ;;
+    clicpu)  echo "CLI-CPU OctaCIL Obsivel Symphact" ;;
+    *) echo "" ;;
+  esac
+}
+
+# hu: IGAZ (rc=0), ha a kartya projektje illik a fej deklaralt szakteruletehez, VAGY a fejnek
+#     nincs zart hatokore, VAGY a kartyan nincs projekt-cimke (nincs eleg jel a blokkolashoz).
+fej_domain_illik() {
+  local fej="$1" projekt="$2"
+  local engedett p
+  engedett=$(fej_sajat_projektek "$fej")
+  [ -z "$engedett" ] && return 0
+  [ -z "$projekt" ] && return 0
+  for p in $engedett; do
+    [ "$p" = "$projekt" ] && return 0
+  done
+  return 1
+}
+
 running=$(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/agents \
   | python3 -c "import json,sys
 for a in json.load(sys.stdin):
@@ -32,35 +57,51 @@ if [ -z "$idle" ]; then
 fi
 
 for fej in $idle; do
-  # A VHR-projektu kartyakat a dispatch NEM oszthatja ki onkezdemenyezetten -- nevesitett,
-  # vissza nem vont korlatozas (CLAUDE.md, "VHR-ugyben Zoli a cimzett, a flotta az
-  # e-penztargepen", 2026-08-15): a VHR-munkat Zoli kerese tartja mozgasban, nem automatikus
-  # heartbeat. Bizonyitottan megismetlodott HAROM egymast koveto heartbeat-korben (2026-08-24,
-  # delphi + pascal, mindannyiszor percekig futo munkat kellett visszavonni).
-  # A puszta project='VHR' NEM eleg: 226 kartyan URES a project mezo (kanban-project-mezo-226-
-  # kartyan-ures-20260808), ezert a cim/leiras VHR-emlitese IS kizaro ok.
-  # coalesce KOTELEZO: SQL harom-erteku logikaban a `project='VHR'` NULL project eseten NULL-t
-  # ad (nem FALSE-t), es a `not (NULL or ...)` is NULL marad -- a WHERE ekkor a sort KIHAGYJA,
-  # nem befogadja. Enelkul MINDEN ures project-u, nem-VHR kartya csendben eltunt volna a listabol.
+  # A VHR-kapacitas-korlatozast Jozsi megszuntette (2026-08-25, Telegram: "A korlatozast regen
+  # eltoroltem!") -- a VHR-projektu planned kartyak mostantol ugyanugy kioszthatok, mint barmely
+  # mas kartya. A korabbi kizaro szures (project='VHR' vagy cim/leiras VHR-emlites) itt megszunt.
+  cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+  # Ha a fejnek nincs SAJAT nevere allitott planned kartyaja, a delegalatlan (assignee NULL)
+  # es a marveen-nevu planned kartyak is jelolt kiosztasi celok -- a szures korabban CSAK
+  # assignee='$fej'-et nezte, ezert ezek strukturalisan sosem kaptak kiosztast (c928b7c7).
+  # A sajat nevre allitott kartya ELSoBBSEGET elvezi: ez a fallback csak akkor fut, ha a
+  # fenti lekerdezes ures -- a prioritas-sorrend (urgent/high/normal/low, created_at asc)
+  # valtozatlan marad.
   #
-  # A cim/leiras-szoveges fallback CSAK URES project mezonel fut -- ha a project explicit ki van
-  # toltve valami MASSAL, azt kell hinni, nem a szoveget (2026-08-24, sajat hiba: a 98f3b15e,
-  # project='MARVEEN', a leirasaban parhuzamos peldakent felsorolta a "VHR5"-ot is, ez a regi
-  # `or title/description like '%VHR%'` miatt VHR-korlatozottnak latszott, es a backend orakig
-  # tetlenul allt tole -- holott Jozsi sajat, nem-VHR feladata volt).
-  vhr_feltetel="(coalesce(project,'')='VHR' or (coalesce(project,'')='' and (title like '%VHR%' or coalesce(description,'') like '%VHR%')))"
-  cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null and not $vhr_feltetel order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+  # 🛑 A "fallback" JELZo ITT DoL EL, hogy a SZAKTERULET-EGYEZTETES (lentebb) fusson-e: a SAJAT
+  #    nevre mar allitott kartyak (fenti lekerdezes) egy MAR MEGHOZOTT dontest hordoznak, azt a
+  #    dispatch nem kerdojelezi meg -- pl. backend sajat 'QCassa'-projektu kartyai a QCassa
+  #    build-szamat MERo SAJAT szkriptjeirol szolnak (device-registry-record-repo-hash-20260826),
+  #    a szures ott HAMIS BLOKKOT adna.
+  fallback=0
   if [ -z "$cards" ]; then
-    vhr_count=$(sqlite3 "$DB" "select count(*) from kanban_cards where assignee='$fej' and status='planned' and archived_at is null and $vhr_feltetel;")
-    if [ "$vhr_count" != "0" ]; then
-      echo "TETLEN: $fej -- csak VHR-projektu planned kartyaja van, korlatozva (Zoli kerese kell)"
-    else
-      echo "TETLEN: $fej -- nincs sajat nevre allitott planned kartyaja"
-    fi
+    fallback=1
+    cards=$(sqlite3 "$DB" "select id from kanban_cards where (assignee is null or assignee='marveen') and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+  fi
+  if [ -z "$cards" ]; then
+    echo "TETLEN: $fej -- nincs sajat nevre, delegalatlan vagy marveen-nevu planned kartyaja"
     continue
   fi
   kiosztva=0
+  hatokor_kihagyva=0
   for card in $cards; do
+    # 🛑 SZAKTERULET-EGYEZTETES (72df44eb) -- CSAK a fallback-agon (delegalatlan/marveen-nevu
+    #    kartyan), ahol a SZKRIPT dont a cimzettrol. Mert eset: backend ketszer JokerQ/VHR temaju
+    #    delegalatlan kartyat kapott (2ad01092, a HANDOFF ket korabbi esete), clicpu Marveen-sajat
+    #    infra-javitast kapott (8cb34e1b) -- egyik sem illett a sajat CLAUDE.md-jukben ZARTAN
+    #    deklaralt szakteruletehez. A fej_sajat_projektek() csak azokat a fejeket sorolja fel,
+    #    akiknek a CLAUDE.md-je ZART repo-halmazt deklaral -- a skill-alapu, tobb-projektes
+    #    fejeknel (akka/avalonia/delphi/design/kutato/mag/ordog/sejt/teszt/vaszon/...) a hatokor
+    #    SZANDEKOSAN tobb projektre terjed ki, ott a projekt-mezo szerinti szures HAMIS BLOKKOT
+    #    adna, ezert azok a fuggvenyben uresen (= nincs korlatozas) maradnak.
+    if [ "$fallback" = "1" ]; then
+      projekt=$(sqlite3 "$DB" "select project from kanban_cards where id='$card';")
+      if ! fej_domain_illik "$fej" "$projekt"; then
+        echo "KIHAGYVA: $fej -> $card -- a kartya projektje [$projekt] nem illik a(z) $fej deklaralt szakteruletehez"
+        hatokor_kihagyva=1
+        continue
+      fi
+    fi
     # A leiras VEGE lezaro-jelzot hordozhat (mar kesz/eldontott munka, a status planned maradt
     # egy korabbi kanban-adatvesztes/elmaradt statusz-valtas miatt -- 2026-08-24, ot eset egy
     # oran belul). Ilyenkor NE ossza ki automatikusan: a koordinator ellenorzese kell elotte.
@@ -69,7 +110,22 @@ for fej in $idle; do
     # ELJARAS-donteshez illeszkedik, nem csak lezarashoz -- lasd T10 / vhrkapuhatokor,
     # ahol egy AKTIV feladat kozbulso szakaszcime volt, nem lezaras). A negy korabbi
     # valos eset mindegyikeben ONMAGABAN is jelen volt legalabb egy a lenti mintak kozul.
-    if echo "$leiras" | grep -qiE "MEGOLDVA:|TARGYTALAN|KESZ ES COMMITOLVA|LEZARVA"; then
+    #
+    # A "4. ELFOGADASI FELTETEL" szakasz (kartya-format, CLAUDE.md) egy JOVOBELI
+    # celallapotot ir le, nem a kartya JELENLEGI allapotat -- ide gyakran kerul zaro-jellegu
+    # szo egy MASIK dokumentum/kartya lezarasarol. Elo eset (3a79324c): a "...doksi 5. pontja
+    # frissitve/lezarva." mondat a 4. pontban allt, a sajat negy tetel egyike sem volt
+    # elkezdve (0 komment), a regi detektor megis GYANUS-kent jelezte, mert a TELJES leirast
+    # atvizsgalta. A zaro-jelzo keresest ezert csak az ELFOGADASI FELTETEL szakasz ELOTTI
+    # reszre szukitjuk -- ha a kartya sajat 1-3. pontjaban all zaro-jelzo, az tovabbra is fog.
+    shopt -s nocasematch
+    if [[ "$leiras" =~ (.*)ELFOGADASI[[:space:]]+FELTETEL ]]; then
+      leiras_sajat="${BASH_REMATCH[1]}"
+    else
+      leiras_sajat="$leiras"
+    fi
+    shopt -u nocasematch
+    if echo "$leiras_sajat" | grep -qiE "MEGOLDVA:|TARGYTALAN|KESZ ES COMMITOLVA|LEZARVA"; then
       echo "GYANUS: $fej -> $card mar keszen allhat (a leirasban lezaro jelzo all) -- ELLENORIZD"
       continue
     fi
@@ -87,6 +143,10 @@ for fej in $idle; do
     fi
   done
   if [ "$kiosztva" = "0" ]; then
-    echo "TETLEN: $fej -- MINDEGYIK planned kartyaja elbukott a kiosztas-kapun"
+    if [ "$hatokor_kihagyva" = "1" ]; then
+      echo "TETLEN: $fej -- csak hatokorbe nem illo delegalatlan/marveen kartya volt, hatokor-egyezes hijan egyet sem oszt ki"
+    else
+      echo "TETLEN: $fej -- MINDEGYIK planned kartyaja elbukott a kiosztas-kapun"
+    fi
   fi
 done

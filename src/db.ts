@@ -1801,9 +1801,16 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   const now = Math.floor(Date.now() / 1000)
   // Status-change audit event (kanban_card_events) is written by the
   // kanban_cards_status_audit DB trigger, not here -- see its definition.
+  // Moving an archived card into a non-done column is itself the un-archive
+  // signal -- without this, the card stayed archived_at-stamped and invisible
+  // in every archived_at IS NULL listing/dispatch query even after the move.
+  // A move into 'done' leaves archived_at untouched (that transition is not
+  // an un-archive action).
   return withKanbanAuditActor(actor, () => db.prepare(
-    'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-  ).run(status, sortOrder, now, id).changes > 0)
+    `UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?,
+       archived_at = CASE WHEN ? = 'done' THEN archived_at ELSE NULL END
+     WHERE id=?`
+  ).run(status, sortOrder, now, status, id).changes > 0)
 }
 
 // Stamp the once-only kanban -> agent dispatch guard. Returns false if the
@@ -2098,8 +2105,15 @@ export const HEARTBEAT_URGENT_SQL =
   "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status != 'done'"
 export const HEARTBEAT_IN_PROGRESS_SQL =
   "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress'"
+// `rowid AS seq` (monotonic, never reused) is selected on purpose: the
+// heartbeat-summary endpoint caps this list, and updated_at cannot be the cap's
+// sort key -- measured 2026-08-30, 80 waiting cards carry only 48 distinct
+// updated_at values (largest tie group 7), because updated_at is a bulk
+// write-timestamp here, not an activity signal (see the comment on
+// getHeartbeatKanbanSummary and card #344). seq breaks every tie the same way
+// every time; see capHeartbeatWaitingList in web/routes/kanban.ts.
 export const HEARTBEAT_WAITING_SQL =
-  "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
+  "SELECT *, rowid AS seq FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
 
 // Inputs for computeStaleBlockerRefs (kanban-stale-blocker-refs.ts): every open
 // card (a candidate that might cite a blocker), every closed seq (what counts
