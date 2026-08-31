@@ -2079,7 +2079,15 @@ export function capturePane(session: string, host: string | null = null): string
     // to the bottom it is removed so the live footer/spinner classifies normally
     // (a banner otherwise pins detectPaneState 'unknown', blocking scheduler +
     // inter-agent delivery). See stripSessionTitleBanner.
-    return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', session, '-e', '-p'])))
+    //
+    // -J: re-join lines tmux soft-wrapped at the pane's current column width.
+    // Without it, a narrower pane (e.g. more tiled sub-agent panes during a
+    // fan-out) can split a literal token mid-word across a hard newline --
+    // measured 2026-08-28 (card marveen-channel-gyakori-restart-20260824):
+    // "Plugin:telegram:te\n   legram MCP Server" broke channel-mcp-reconnect's
+    // contiguous-substring plugin match every single time that day, driving
+    // every soft-reconnect to a full stage-3 session restart.
+    return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', session, '-e', '-p', '-J'])))
   } catch {
     return null
   }
