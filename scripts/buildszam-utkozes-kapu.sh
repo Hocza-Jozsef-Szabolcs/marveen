@@ -527,28 +527,59 @@ for sha, parents, _, _ in commits:
 wanted.extend(first_parent)
 values = values_for(list(dict.fromkeys(wanted)))
 
+parent_map = {sha: parents for sha, parents, _, _ in commits}
+
+# (a) VISSZATERES: az ertek egy MASIK ertek utan ujra megjelenik-e -- LESZARMAZAS-TUDATOSAN
+#     (kartya 8ce3fb7b, avalonia+marveen merese): a KORABBI alak a TELJES tortenetet EGY, flat,
+#     datum-sorrendi vonalnak nezte -- ket FUGGETLEN, PARHUZAMOS ag (KOZOS elodbol elagazva,
+#     mindketto SAJAT maga leptet) igy hamis "visszateres"-t adott, amint a ket ag commitjai a
+#     datumban interlaceloltak (a JokerQ main klonjan: 4b38f2a->941 es 0b3d202->942 UGYANABBOL
+#     az 940-es szuloboli agazik el, es a kesobb szuletett, DE 941-et OROKLo bbc0a73 commit a flat
+#     bejarasban a 942 UTAN allt -- hamis "941 visszatert" lelet).
+# 🛑 A JAVITAS: TOPOLOGIKUS bejaras (szulo mindig a gyermeke ELoTT), es minden commit a SAJAT
+#    OSEITOL OROKOLT ertek-halmazt viszi tovabb. Egy visszateres csak akkor valodi, ha a commit
+#    ertekE ELTER MINDEN SZULoJEToL (tehat tenyleges valtozas/kiadas -- ugyanaz a felteltel, mint
+#    a (b) KIADAS-DUPLIKATUM detektornal), ES az uj ertek MAR SZEREPEL valamelyik SZULo SAJAT
+#    OROKSEGEBEN -- vagyis a sajat OSEI kozott, nem barmelyik parhuzamos ag oseiben.
+# en: FIX: topological walk (parents before children); each commit carries forward the union of
+#    values inherited from its OWN ancestors. A return only counts if the value genuinely changed
+#    (differs from every parent -- same condition as the duplicate-release detector) AND the new
+#    value already appears in some parent's OWN inherited history -- not merely earlier in an
+#    unrelated parallel branch's timeline.
+topo_order = [c for c in git_text("log", "--reverse", "--topo-order", "--format=%H",
+                                  *CDepthArgs, "HEAD").split() if c]
+
+inherited = {}   # sha -> frozenset(values seen along ANY path reaching this commit, incl. itself)
+returning = []   # [(sha, value), ...]
+returning_vals = set()
+
+for sha in topo_order:
+    v = values.get(sha)
+    parents = parent_map.get(sha, [])
+    parent_sets = [inherited[p] for p in parents if p in inherited]
+    combined = frozenset().union(*parent_sets) if parent_sets else frozenset()
+
+    if v:
+        parent_vals = [values.get(p) for p in parents]
+        changed = all(pv != v for pv in parent_vals) if parent_vals else True
+        if changed and v in combined and v not in returning_vals:
+            returning.append((sha, v))
+            returning_vals.add(v)
+        combined = combined | {v}
+
+    inherited[sha] = combined
+
 checked_commits = 0
 checked_subjects = 0
-returning = []          # [(sha, value), ...]
 release_values = {}
 duplicates = []          # [(sha, value), ...]
 subject_mismatch = []    # [(sha, text), ...]
-
-seen_values = set()
-prev = None
 
 for sha, parents, _date, subject in commits:
     v = values.get(sha)
     if not v:
         continue
     checked_commits += 1
-
-    # (a) VISSZATERES: az ertek egy MASIK ertek utan ujra megjelenik-e a bejart lancon
-    if v != prev:
-        if v in seen_values and v not in [rv for _, rv in returning]:
-            returning.append((sha, v))
-        seen_values.add(v)
-    prev = v
 
     # (b) KIADAS-DUPLIKATUM: ket KIADAS-commit ugyanazt az erteket adja ki
     #

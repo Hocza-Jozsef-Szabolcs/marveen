@@ -921,6 +921,15 @@ bump_at() {   # dir ertek cim iso-idobelyeg(pl. 2026-08-31T00:51:00+02:00)
   GIT_AUTHOR_DATE="$4" GIT_COMMITTER_DATE="$4" gitq "$1" commit -q -m "$3"
 }
 
+# hu: UGYANAZT az erteket viszi tovabb (pl. [deploy] kiserocommit), DE VALODI diffet keszit --
+#     kulonben a `git commit` "nothing to commit"-tel csendben NEM hozna letre a commitot, es a
+#     hivo egy KORABBI commit SHA-jat kapna vissza, nem egy ujat.
+companion_at() {   # dir cim iso-idobelyeg
+  echo "kiserojegyzet $3" >> "$1/deploy-note.txt"
+  gitq "$1" add deploy-note.txt
+  GIT_AUTHOR_DATE="$3" GIT_COMMITTER_DATE="$3" gitq "$1" commit -q -m "$2"
+}
+
 echo
 echo "T20 -- referenciapont: masodperc-pontossag, nem nap-pontossag"
 R=$(new_repo t20 100)
@@ -995,6 +1004,122 @@ else
     FPass=$((FPass + 1))
   else
     echo "  ❌ T21 mutansnal RC=$RC, 1 lenne a vart -- a mutacio nem hozta vissza a hibat"
+    FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+  fi
+fi
+
+# ── T22-T24: PARHUZAMOS AGAK -- A VISSZATERES-DETEKTOR LESZARMAZAS-TUDATOSSAGA ───
+# 🛑 MERT ESET (kartya 8ce3fb7b, avalonia+marveen merese, JokerQ main klon 2026-08-31): ket
+#    FUGGETLEN ag KOZOS elodbol elagazva, mindketto SAJAT maga leptet (4b38f2a->941, 0b3d202->942,
+#    mindketto az 940-es szuloboli) -- a REGI, flat datum-sorrendi bejaras hamis "visszateres"-t
+#    adott, mert a kesobb szuletett, DE a 941-et OROKLo bbc0a73 commit a datum-sorrendben a 942
+#    UTAN allt. A KIADAS-DUPLIKATUM detektor (sorrend-fuggetlen) NEM latta ezt duplikatumkent --
+#    fuggetlen bizonyitek, hogy a lelet HAMIS volt.
+merge_at() {   # dir ertek cim iso-idobelyeg parent1 parent2  ->  stdout: az uj commit SHA-ja
+  local dir="$1" val="$2" msg="$3" dt="$4" p1="$5" p2="$6" tree sha
+  git -C "$dir" checkout -q "$p1"
+  echo "$val" > "$dir/BuildNumberV2.txt"
+  gitq "$dir" add BuildNumberV2.txt
+  tree=$(git -C "$dir" write-tree)
+  sha=$(GIT_AUTHOR_DATE="$dt" GIT_COMMITTER_DATE="$dt" git -C "$dir" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit-tree "$tree" -p "$p1" -p "$p2" -m "$msg")
+  git -C "$dir" update-ref refs/heads/main "$sha"
+  git -C "$dir" checkout -q main
+  echo "$sha"
+}
+
+echo
+echo "T22 -- ket FUGGETLEN ag KOZOS elodbol, interlacelo datummal -> NEM valodi visszateres"
+R=$(new_repo t22 100)
+FBase=$(git -C "$R" rev-parse HEAD)
+
+git -C "$R" checkout -q -b branchA "$FBase"
+bump_at "$R" 200 "feat: A ag lepteti (build 200)" "2026-08-31T10:00:00+02:00"
+FA=$(git -C "$R" rev-parse HEAD)
+
+git -C "$R" checkout -q -b branchB "$FBase"
+bump_at "$R" 201 "feat: B ag lepteti (build 201)" "2026-08-31T11:00:00+02:00"
+FB=$(git -C "$R" rev-parse HEAD)
+
+# hu: az A ag KISERo commitja -- ertek VALTOZATLAN (200), DE keSoBB szuletik, mint a B ag -- ez
+#     okozza a flat bejarasnal a hamis leletet.
+git -C "$R" checkout -q branchA
+companion_at "$R" "chore: A ag kiserokomment, ertek valtozatlan (build 200) [deploy]" "2026-08-31T12:00:00+02:00"
+FC=$(git -C "$R" rev-parse HEAD)
+
+FM=$(merge_at "$R" 202 "merge: A+B agak egyesitve, uj szammal (build 202)" "2026-08-31T13:00:00+02:00" "$FC" "$FB")
+
+OUT=$(BSZ_REFERENCE_DATE="2026-08-31T09:00:00+02:00" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T22a a 200-as ertek NEM szamit visszaternek" ZOLD "VISSZATERo BUILD-SZAM" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T22b a kilepesi kod 0 (nincs valodi utkozes)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T22b RC=$RC, 0 lenne a helyes"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+echo
+echo "T23 KONTROLL -- valodi visszateres UGYANAZON a lancolaton TOVABBRA IS lelet"
+git -C "$R" checkout -q main
+bump_at "$R" 200 "hiba: UJRA kiadja a mar hasznalt 200-at, UGYANAZON a lancolaton (build 200)" "2026-08-31T14:00:00+02:00"
+OUT=$(BSZ_REFERENCE_DATE="2026-08-31T09:00:00+02:00" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T23a a sajat lancolaton belul valodi visszateres LATSZIK" PIROS "VISSZATERo BUILD-SZAM" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T23b a kilepesi kod 1 (a valodi visszateres tovabbra is blokkol)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T23b RC=$RC, 1 lenne a helyes"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+echo
+echo "T24 -- MUTACIO: a leszarmazas-tudatos bejaras visszaallitva flat/datum-sorrendire, T22 visszajon"
+FMutantDesc="$FTmp/mutans-leszarmazas.sh"
+python3 - "$CGate" "$FMutantDesc" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+start = "parent_map = {sha: parents for sha, parents, _, _ in commits}\n"
+end = "checked_commits = 0\n"
+si, ei = text.find(start), text.find(end)
+if si != -1 and ei != -1 and si < ei:
+    replacement = "returning = []          # [(sha, value), ...]\nseen_values = set()\nprev = None\n\n"
+    new_text = text[:si] + replacement + text[ei:]
+    marker = "    checked_commits += 1\n\n    # (b) KIADAS-DUPLIKATUM"
+    old_a = (
+        "    checked_commits += 1\n\n"
+        "    if v != prev:\n"
+        "        if v in seen_values and v not in [rv for _, rv in returning]:\n"
+        "            returning.append((sha, v))\n"
+        "        seen_values.add(v)\n"
+        "    prev = v\n\n"
+        "    # (b) KIADAS-DUPLIKATUM"
+    )
+    if marker in new_text:
+        new_text = new_text.replace(marker, old_a, 1)
+        open(dst, 'w').write(new_text)
+PYEOF
+if [ ! -s "$FMutantDesc" ] || cmp -s "$CGate" "$FMutantDesc" 2>/dev/null; then
+  echo "  ⚠️  T24 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  R2=$(new_repo t24 100)
+  FBase2=$(git -C "$R2" rev-parse HEAD)
+  git -C "$R2" checkout -q -b branchA "$FBase2"
+  bump_at "$R2" 200 "feat: A ag lepteti (build 200)" "2026-08-31T10:00:00+02:00"
+  FA2=$(git -C "$R2" rev-parse HEAD)
+  git -C "$R2" checkout -q -b branchB "$FBase2"
+  bump_at "$R2" 201 "feat: B ag lepteti (build 201)" "2026-08-31T11:00:00+02:00"
+  FB2=$(git -C "$R2" rev-parse HEAD)
+  git -C "$R2" checkout -q branchA
+  companion_at "$R2" "chore: A ag kiserokomment, ertek valtozatlan (build 200) [deploy]" "2026-08-31T12:00:00+02:00"
+  FC2=$(git -C "$R2" rev-parse HEAD)
+  merge_at "$R2" 202 "merge: A+B agak egyesitve, uj szammal (build 202)" "2026-08-31T13:00:00+02:00" "$FC2" "$FB2" >/dev/null
+  OUT=$(BSZ_REFERENCE_DATE="2026-08-31T09:00:00+02:00" bash "$FMutantDesc" --repo "$R2" 2>&1); RC=$?
+  if [ "$RC" -eq 1 ]; then
+    echo "  ✅ T24 mutansnal a hamis visszateres IS jelentkezik (a T22 visszajon)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T24 mutansnal RC=$RC, 1 lenne a vart -- a mutacio nem hozta vissza a hibat"
     FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
   fi
 fi
