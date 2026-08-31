@@ -803,6 +803,111 @@ else
   echo "  ⚠️  T16j KIHAGYVA -- nincs node a PATH-on"
 fi
 
+# ── T17: WORKTREE ELAVULT, EGYENES OSE A FoAGNAK -- NEM UTKOZES ──────────────
+# 🛑 MERT ESET (kartya ec51fef8 / #1241, ordog merese): QuantumAE kamera-valto-szkenneles
+#    worktree (52a8dd1f) a fo ag HEAD-jenek (akkor 950ba836) EGYENES ose, ket koztes commit
+#    egyike sem leptette a szamot -- a regi kapu ezt VALODI utkozeskent jelezte, holott a
+#    worktree csak nem huzta be a fo ag azota erkezett munkajat.
+echo
+echo "T17 -- fo ag elore lep, elmaradt worktree UGYANAZZAL a szammal -> NEM utkozes"
+R=$(new_repo t17 500)
+gitq "$R" worktree add -q --detach "$FTmp/t17-stale" HEAD >/dev/null 2>&1
+echo "fo agi munka" > "$R/fomunka.txt"
+gitq "$R" add fomunka.txt
+gitq "$R" commit -q -m "feat: fo ag halad, a szamot NEM lepteti (build 500 marad)"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T17a fo ag elore, elmaradt worktree AZONOS szammal -> NEM utkozes" ZOLD "WORKTREE-UTKOZES" "$OUT"
+
+# 🛑 KONTROLL, FORDITOTT IRANY (ugyanaz a szerkezet, mint T12b -- ez az uj kod melletti,
+#    kozvetlen regressziovedelem): itt a WORKTREE lep elore a fo agtol FUGGETLEN, SAJAT munkaval,
+#    a fo ag marad az os -- ennek TOVABBRA IS utkozeskent kell jeleznie, mert a kizaras csak akkor
+#    all, ha a FoAG az, amelyik elore lepett.
+echo
+echo "T17b KONTROLL -- forditva: a WORKTREE lep elore a fo agtol, ez UTKOZES marad"
+R2=$(new_repo t17b 500)
+gitq "$R2" worktree add -q --detach "$FTmp/t17b-elore" HEAD >/dev/null 2>&1
+echo "worktree sajat munkaja" > "$FTmp/t17b-elore/wtfile.txt"
+gitq "$FTmp/t17b-elore" add wtfile.txt
+gitq "$FTmp/t17b-elore" commit -q -m "feat: a WORKTREE lep elore, a szamot NEM lepteti (build 500 marad)"
+OUT=$(bash "$CGate" --repo "$R2" 2>&1)
+expect "T17b worktree elore, fo ag elmaradva -> UTKOZES marad" PIROS "WORKTREE-UTKOZES" "$OUT"
+
+# ── T18: REFERENCIAPONT -- CSAK A BEVEZETES UTANI LELET BLOKKOL ──────────────
+# 🛑 MERT ESET (kartya ec51fef8 / #1241): a kapu 2026-08-31-i bevezetese a TELJES tortenetet
+#    vizsgalja, ez mar beegett, tortenelmi inkonzisztenciakon is LELETET (rc=1) adott -- a `wt done`
+#    minden hivast blokkolt, orokre (a tortenet nem valtoztathato meg). A helyes viselkedes: a
+#    referenciapont ELoTTI lelet TOVABBRA IS KIIRODIK (lathato marad), de nem allitja meg a hivot;
+#    csak egy a referenciaponton VAGY UTANA szuletett, FRISS lelet blokkoljon.
+echo
+echo "T18 -- referenciapont: a bevezetes ELoTTI lelet jelentve, DE NEM blokkol"
+bump_dated() {   # dir ertek cim datum(YYYY-MM-DD)
+  echo "$2" > "$1/BuildNumberV2.txt"
+  gitq "$1" add BuildNumberV2.txt
+  GIT_AUTHOR_DATE="${4}T10:00:00" GIT_COMMITTER_DATE="${4}T10:00:00" gitq "$1" commit -q -m "$3"
+}
+
+R=$(new_repo t18 100)
+bump_dated "$R" 200 "feat: lepteti (build 200)" "2026-06-01"
+bump_dated "$R" 150 "feat: REGI csokkenes, a referenciapont elott (build 150)" "2026-06-02"
+bump_dated "$R" 300 "feat: lepteti (build 300)" "2026-06-03"
+
+CRef="2026-08-31"
+OUT=$(BSZ_REFERENCE_DATE="$CRef" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T18a a regi csokkenes TOVABBRA IS kiirodik" PIROS "A BUILD-SZAM CSOKKENT" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T18b a KIZAROLAG regi lelet NEM blokkol (RC=0, vart: 0)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T18b RC=$RC, 0 lenne a helyes (a regi lelet nem blokkolhat)"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# UJ, FRISS regresszio A REFERENCIAPONTON UTAN -- ennek blokkolnia kell
+bump_dated "$R" 250 "feat: FRISS csokkenes, a referenciapont UTAN (build 250)" "2026-09-01"
+OUT=$(BSZ_REFERENCE_DATE="$CRef" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T18c a friss csokkenes is kiirodik" PIROS "A BUILD-SZAM CSOKKENT" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T18d a FRISS (referenciapont utani) lelet BLOKKOL (RC=1, vart: 1)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T18d RC=$RC, 1 lenne a helyes (a friss regresszionak blokkolnia kell)"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# ── T19: CIM-DETEKTOR POZITIV HORGONY -- CSAK SAJAT KIHIRDETES BLOKKOL ───────
+# 🛑 MERT ESET (kartya ec51fef8 / #1241, marveen/clicpu/sajat meres): a QuantumAE 8c457ec6 cime
+#    egy MASIK repo (JokerQ) buildjere hivatkozik ("... (build 741 utan is)"), a horgony NELKULI
+#    minta ezt SAJAT kihirdetesnek nezte es hamis "CIM ELTER" leletet adott.
+echo
+echo "T19 -- cim-detektor: csak a cim ELEJEN allo, ismert elotagu 'build NNN' szamit"
+R=$(new_repo t19 1077)
+echo "x" > "$R/x.txt"; gitq "$R" add x.txt
+gitq "$R" commit -q -m "#811 47f6f4a3 JokerQ/A36: TQaeActor sosem er keszenletbe 15 mp alatt (build 741 utan is)"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T19a masik repora hivatkozo cim NEM cim-elteres" ZOLD "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
+
+# 🛑 KONTROLL, HAROM ISMERT VALODI ESET (a fejlec sajat dokumentalt talalatai) -- ezeknek
+#    TOVABBRA IS jelezniuk kell, kulonben a horgony tul szuk.
+echo
+echo "T19b/c/d KONTROLL -- a HAROM ismert valodi eset tovabbra is illeszkedik"
+R=$(new_repo t19bcd 1)
+echo "x" > "$R/x.txt"; gitq "$R" add x.txt
+gitq "$R" commit -q -m "feat: build 11 - PIN TEE tarolas, UI hardening, kiosk kill switch"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T19b feat: build N (QCassa 4b5ea94 mintaja)" PIROS "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
+
+R=$(new_repo t19c 1)
+echo "x" > "$R/x.txt"; gitq "$R" add x.txt
+gitq "$R" commit -q -m "feat: build 10 - USB Loader: pendrive auto-detect"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T19c feat: build N (QCassa cfde0b4 mintaja)" PIROS "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
+
+R=$(new_repo t19d 1)
+echo "x" > "$R/x.txt"; gitq "$R" add x.txt
+gitq "$R" commit -q -m "merge: main (build 728, sqlite-bionic asset) -> feat/plugin-tee-decryptor"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T19d merge: ... build N (JokerQ 5af6597 mintaja)" PIROS "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
+
 # ── Osszegzes ─────────────────────────────────────────────────────────────────
 echo
 echo "EREDMENY: $FPass rendben | $FFail elter"
