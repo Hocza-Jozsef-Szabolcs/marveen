@@ -908,6 +908,97 @@ gitq "$R" commit -q -m "merge: main (build 728, sqlite-bionic asset) -> feat/plu
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
 expect "T19d merge: ... build N (JokerQ 5af6597 mintaja)" PIROS "COMMIT-CIM ELTER A FAJLTOL" "$OUT"
 
+# ── T20: REFERENCIAPONT MASODPERC-PONTOSSAGA -- UGYANAZON A NAPON, DE KORABBAN ───
+# 🛑 MERT ESET (vaszon merese, ec51fef8 utolagos hataresete): a T18 nap-pontossagu
+#    (`--date=short`) hatarral dolgozott, es minden szintetikus commitja KULONBOZO napon szuletett
+#    -- a hataresetet (UGYANAZON a napon, de a referenciapont ORAJA ELoTT) NEM fedte le. A valos
+#    QuantumAE-eset: `78071c54` 2026-08-31 00:51-kor, a kapu tenyleges bevezetese (`7bf014f`)
+#    viszont csak 15:08-kor -- a nap-pontossagu osszehasonlitas ezt "referenciapont utaninak"
+#    latta es TOVABBRA IS blokkolt.
+bump_at() {   # dir ertek cim iso-idobelyeg(pl. 2026-08-31T00:51:00+02:00)
+  echo "$2" > "$1/BuildNumberV2.txt"
+  gitq "$1" add BuildNumberV2.txt
+  GIT_AUTHOR_DATE="$4" GIT_COMMITTER_DATE="$4" gitq "$1" commit -q -m "$3"
+}
+
+echo
+echo "T20 -- referenciapont: masodperc-pontossag, nem nap-pontossag"
+R=$(new_repo t20 100)
+bump_at "$R" 200 "feat: lepteti (build 200)" "2026-08-30T23:00:00+02:00"
+bump_at "$R" 150 "feat: csokkenes UGYANAZON a napon, A REFERENCIAPONT ORAJA ELoTT (build 150)" "2026-08-31T00:51:00+02:00"
+
+CRef="2026-08-31T15:08:25+02:00"
+OUT=$(BSZ_REFERENCE_DATE="$CRef" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T20a a napon-belul-korabbi csokkenes TOVABBRA IS kiirodik" PIROS "A BUILD-SZAM CSOKKENT" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T20b UGYANAZON a napon, de a referenciapont ORAJA ELoTT szuletett lelet NEM blokkol (RC=0)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T20b RC=$RC, 0 lenne a helyes -- nap-pontossagu osszehasonlitas hamisan blokkolna"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# UJ regresszio UGYANAZON a napon, DE A REFERENCIAPONT ORAJA UTAN -- ennek TOVABBRA IS blokkolnia kell
+bump_at "$R" 120 "feat: csokkenes UGYANAZON a napon, A REFERENCIAPONT ORAJA UTAN (build 120)" "2026-08-31T16:00:00+02:00"
+OUT=$(BSZ_REFERENCE_DATE="$CRef" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T20c a napon-belul-kesobbi csokkenes is kiirodik" PIROS "A BUILD-SZAM CSOKKENT" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T20d ugyanazon a napon, a referenciapont oraja UTANI lelet TOVABBRA IS blokkol (RC=1)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T20d RC=$RC, 1 lenne a helyes"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# hu: a PRODUKCIOS ALAPERTEK (BSZ_REFERENCE_DATE nelkul) is 7bf014f SAJAT idopontjat hasznalja --
+#     ugyanaz a repo, override NELKUL, ugyanugy NEM blokkol a nap-korai csokkenesre.
+echo
+echo "T20e -- a PRODUKCIOS alapertek (nincs BSZ_REFERENCE_DATE) is masodperc-pontos"
+R2=$(new_repo t20e 100)
+bump_at "$R2" 200 "feat: lepteti (build 200)" "2026-08-30T23:00:00+02:00"
+bump_at "$R2" 150 "feat: csokkenes UGYANAZON a napon, A REFERENCIAPONT ORAJA ELoTT (build 150)" "2026-08-31T00:51:00+02:00"
+OUT=$(bash "$CGate" --repo "$R2" 2>&1); RC=$?
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T20f a produkcios alapertek szerint sem blokkol a nap-korai csokkenes (RC=0)"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T20f RC=$RC, 0 lenne a helyes -- a produkcios alapertek meg nap-pontossagu"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# ── T21 (MUTACIO): a masodperc-pontossag visszavetele -> a T20b BUKJON vissza ────
+echo
+echo "T21 -- MUTACIO: nap-pontossagra (--date=short) visszaallitva, a T20b visszajon"
+FMutantRef="$FTmp/mutans-refdatum.sh"
+python3 - "$CGate" "$FMutantRef" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+old_log = '"log", "--format=%H|%P|%ct|%s", *CDepthArgs, "HEAD"'
+new_log = '"log", "--format=%H|%P|%cd|%s", "--date=short", *CDepthArgs, "HEAD"'
+old_dict = 'commit_date = {sha: int(date) for sha, _, date, _ in commits if date.isdigit()}'
+new_dict = 'commit_date = {sha: date for sha, _, date, _ in commits}'
+old_blocks = 'return commit_date.get(sha, 0) >= CReferenceEpoch'
+new_blocks = 'return commit_date.get(sha, "") >= "2026-08-31"'
+text = text.replace(old_log, new_log, 1).replace(old_dict, new_dict, 1).replace(old_blocks, new_blocks, 1)
+open(dst, 'w').write(text)
+PYEOF
+if cmp -s "$CGate" "$FMutantRef" 2>/dev/null; then
+  echo "  ⚠️  T21 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  R3=$(new_repo t21 100)
+  bump_at "$R3" 200 "feat: lepteti (build 200)" "2026-08-30T23:00:00+02:00"
+  bump_at "$R3" 150 "feat: csokkenes UGYANAZON a napon, A REFERENCIAPONT ORAJA ELoTT (build 150)" "2026-08-31T00:51:00+02:00"
+  OUT=$(bash "$FMutantRef" --repo "$R3" 2>&1); RC=$?
+  if [ "$RC" -eq 1 ]; then
+    echo "  ✅ T21 mutansnal a nap-korai csokkenes IS blokkol (a T20b visszajon)"
+    FPass=$((FPass + 1))
+  else
+    echo "  ❌ T21 mutansnal RC=$RC, 1 lenne a vart -- a mutacio nem hozta vissza a hibat"
+    FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+  fi
+fi
+
 # ── Osszegzes ─────────────────────────────────────────────────────────────────
 echo
 echo "EREDMENY: $FPass rendben | $FFail elter"

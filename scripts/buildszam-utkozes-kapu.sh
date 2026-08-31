@@ -77,12 +77,20 @@ CConventionsPath="${BSZ_CONVENTIONS_PATH:-$CScriptDir/build-number-conventions.j
 CDefaultLimit=0
 # hu: REFERENCIAPONT (kartya ec51fef8 / #1241): a check_history csak a referenciaponton VAGY UTANA
 #     szuletett commitokon alapulo leletre BLOKKOL (rc=1) -- a korabbi, mar beegett tortenelmi
-#     leletek tovabbra is KIIRODNAK, de nem allitjak meg a hivot. A `wt done`-t megallito bevezetes
-#     napja: 2026-08-31. `BSZ_REFERENCE_DATE` teszteknek (lasd `build-szam-utkozes-meres`-t hasznalo
-#     szintetikus repok, ahol a commit-datumokat mesterségesen kell mozgatni a referenciaponthoz kepest).
+#     leletek tovabbra is KIIRODNAK, de nem allitjak meg a hivot. Az alapertek a kapu tenyleges
+#     bevezeto commitjanak (`7bf014f`) SAJAT masodperc-pontos idobelyege -- `git show -s
+#     --format=%ct 7bf014f` -> 1788181705 (2026-08-31T15:08:25+02:00), NEM csak a napja.
+#     🛑 A NAP-PONTOSSAGU alak (vaszon merese) egy UGYANAZON a napon, DE 7bf014f oraja ELoTT
+#        szuletett commitot (QuantumAE `78071c54`, 00:51) is a referenciapontnal "kesobbinek"
+#        latott -- tovabbra is blokkolt, holott a kapu csak aznap 15:08-kor lepett eletbe.
+#     `BSZ_REFERENCE_DATE` teszteknek (lasd `build-szam-utkozes-meres`-t hasznalo szintetikus
+#     repok) -- barom alakot fogad el: UNIX-masodperc, YYYY-MM-DD, vagy teljes ISO 8601 idobelyeg.
 # en: REFERENCE POINT: check_history only BLOCKS on findings anchored to a commit born ON OR AFTER
-#     this date -- older, already-baked-in findings still print, they just do not stop the caller.
-CReferenceDate="${BSZ_REFERENCE_DATE:-2026-08-31}"
+#     this moment -- older, already-baked-in findings still print, they just do not stop the
+#     caller. The default is the introducing commit's (`7bf014f`) own second-precision timestamp,
+#     not merely its calendar day (a day-precision boundary let a same-day-but-earlier commit
+#     slip through -- see the comment in check_history for the measured case).
+CReferenceDate="${BSZ_REFERENCE_DATE:-1788181705}"
 
 FRoots=()
 FRepos=()
@@ -362,6 +370,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 
 CRepo  = os.environ["BSZ_REPO"]
 CFile  = os.environ["BSZ_FILE"]
@@ -435,16 +444,51 @@ branch = git_text("rev-parse", "--abbrev-ref", "HEAD").strip()
 
 # hu: REFERENCIAPONT (kartya ec51fef8 / #1241): a kapu 2026-08-31-i bevezetese elott mar
 #     beegett tortenelmi leletek NEM blokkolhatjak orokre a `wt done`-t -- a tortenet nem
-#     valtoztathato meg. A hatar DATUM, nem commit-hash, mert a bevezetes egy naptari napon
-#     tortent MINDEN erintett repora egyszerre (lasd a kartya "Mert teny" resze). Csak azok a
-#     leletek BLOKKOLNAK (rc=1), amelyeknek a KIVALTO commitja a referenciaponton VAGY utana
-#     szuletett -- a korabbiak tovabbra is KIIRODNAK (a tortenet lathato marad), csak nem
-#     allitjak meg a hivot. `--date=short` -> nap-pontossagu YYYY-MM-DD, lexikalisan
-#     osszehasonlithato a referenciapont ugyanilyen alakjaval.
+#     valtoztathato meg. Csak azok a leletek BLOKKOLNAK (rc=1), amelyeknek a KIVALTO commitja a
+#     referenciaponton VAGY utana szuletett -- a korabbiak tovabbra is KIIRODNAK (a tortenet
+#     lathato marad), csak nem allitjak meg a hivot.
+#
+# 🛑 A HATAR MASODPERC-PONTOS IDoBELYEG, NEM NAP-PONTOSSAGU DATUM (vaszon merese, ec51fef8
+#    utolagos hataresete): az elso alak `--date=short`-ot hasznalt (YYYY-MM-DD, lexikalis
+#    osszehasonlitas) -- egy UGYANAZON a NAPON, DE A KAPU TENYLEGES BEVEZETESE ELoTT szuletett
+#    commit (a QuantumAE `78071c54`, 00:51) igy `>=`-nek szamitott a "2026-08-31" hatarhoz kepest,
+#    es TOVABBRA IS blokkolt, holott a kapu csak aznap KESoBB, `7bf014f`-nel (15:08) lepett eletbe.
+#    A javitas: `%ct` (masodperc-pontos, TZ-fuggetlen UNIX-idobelyeg) mindket oldalon, es az
+#    alapertelmezett referenciapont `7bf014f` SAJAT commit-idopontja, nem a napja.
+# en: The boundary is a second-precision timestamp, not a calendar date -- the original
+#    `--date=short` form let a same-day-but-earlier commit slip past the day-string comparison.
+#    Fix: `%ct` (second-precision, TZ-agnostic unix epoch) on both sides, and the default
+#    reference point is the introducing commit's own moment, not its calendar day.
 CReferenceDate = os.environ.get("BSZ_REFERENCE_DATE", "").strip()
 
+
+def parse_reference(value):
+    """hu: A referenciapont MASODPERC-pontos UNIX-idobelyegre alakitasa. Harom bemeneti alak:
+       (1) puszta UNIX-masodperc szam, (2) YYYY-MM-DD (a nap KEZDETE -- visszamenoleges
+       kompatibilitas a korabbi, nap-pontossagu tesztekkel, ahol a napok kozott mindig van
+       tobb-orás tavolsag), (3) teljes ISO 8601 idobelyeg (a valodi hasznalat -- a bevezeto
+       commit teljes idopontja). Ertelmezhetetlen bemenetre None -- a hivo ilyenkor fail-closed
+       blokkol, ahogy az ures CReferenceDate is tette korabban.
+       en: Normalises the reference point to second-precision unix epoch. Three accepted shapes:
+       raw epoch seconds, a bare YYYY-MM-DD date (start of day, kept for the older day-precision
+       tests), or a full ISO 8601 timestamp (the real usage -- the introducing commit's exact
+       moment). Unparseable input returns None -- callers stay fail-closed on that, same as the
+       previous empty-string handling."""
+    if re.fullmatch(r"[0-9]+", value):
+        return int(value)
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return int(dt.timestamp())
+
+
+CReferenceEpoch = parse_reference(CReferenceDate) if CReferenceDate else None
+
 commits = []
-for line in git_text("log", "--format=%H|%P|%cd|%s", "--date=short", *CDepthArgs, "HEAD").splitlines():
+for line in git_text("log", "--format=%H|%P|%ct|%s", *CDepthArgs, "HEAD").splitlines():
     if not line.strip():
         continue
     sha, _, rest = line.partition("|")
@@ -452,15 +496,15 @@ for line in git_text("log", "--format=%H|%P|%cd|%s", "--date=short", *CDepthArgs
     date, _, subject = rest2.partition("|")
     commits.append((sha, parents.split(), date, subject))
 
-commit_date = {sha: date for sha, _, date, _ in commits}
+commit_date = {sha: int(date) for sha, _, date, _ in commits if date.isdigit()}
 
 
 def blocks(sha):
     """hu: Ez a commit a referenciaponton VAGY utana szuletett-e -- csak ez blokkol.
        en: Whether this commit was born ON or AFTER the reference point -- only that blocks."""
-    if not CReferenceDate:
+    if CReferenceEpoch is None:
         return True
-    return commit_date.get(sha, "") >= CReferenceDate
+    return commit_date.get(sha, 0) >= CReferenceEpoch
 
 
 CPreReferenceNote = "A REFERENCIAPONT ELoTT -- csak jelentve, nem blokkol"
