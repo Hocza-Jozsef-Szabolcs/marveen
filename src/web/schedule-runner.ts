@@ -874,7 +874,7 @@ function resolveSchedulerAlertToken(): string | undefined {
   const envContent = readFileOr(join(PROJECT_ROOT, '.env'), '')
   const token = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
   if (token) return token
-  const channelEnv = readFileOr(join(homedir(), '.claude', 'channels', 'telegram', '.env'), '')
+  const channelEnv = readFileOr(join(channelStateDir('telegram'), '.env'), '')
   return channelEnv.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
 }
 
