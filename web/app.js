@@ -973,12 +973,21 @@ document.getElementById('kanbanProjectFilter').addEventListener('change', (e) =>
   renderKanban()
 })
 
-// The kanban "owner" is the assignee whose type is 'owner' -- the person the
-// board is primarily run for, on any deployment. Identified by type, never by
-// a hard-coded display name, so the quick "show what's on me" view is generic.
-// Returns null when no owner-type assignee exists (then the quick button is
-// hidden and only the general per-assignee dropdown is shown).
+// The board's escalation convention never assigns a card directly to the
+// 'owner'-type assignee (see kanban.ts: a döntésre váró kártya a 'bot'
+// nevén marad, ő triázsol -- az owner-hez egyenesen senki nem tolja át).
+// Ezért az "owner"-re szűrő "Rám vár"/"Függőségek" gomb strukturálisan
+// mindig üres eredményt adott, amíg a 'bot'-típusú assignee-t kereste --
+// mérve 2026-09-01, Józsi jelezte. A 'bot' (marveen) a gyakorlati proxy:
+// nála gyűlnek a döntésre váró kártyák. Owner-re csak akkor esik vissza,
+// ha egy adott telepítésen nincs bot-típusú assignee (nem várt eset, de
+// nem is összeomlasztandó rá). Identified by type, never by a hard-coded
+// display name, so the quick "show what's on me" view stays generic.
+// Returns null when neither exists (then the quick button is hidden and
+// only the general per-assignee dropdown is shown).
 function ownerAssigneeName() {
+  const bot = kanbanAssignees.find((a) => a.type === 'bot')
+  if (bot) return bot.name
   const owner = kanbanAssignees.find((a) => a.type === 'owner')
   return owner ? owner.name : null
 }

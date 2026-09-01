@@ -39,6 +39,14 @@ function loadFn(): (card: any, ownerName: string | null) => boolean {
   return new Function(body)()
 }
 
+function loadOwnerAssigneeName(assignees: Array<{ name: string; type: string }>): () => string | null {
+  const fnSrc = extractFn('ownerAssigneeName')
+  if (!fnSrc) throw new Error('ownerAssigneeName missing from web/app.js')
+  const body = `let kanbanAssignees = ${JSON.stringify(assignees)}\n${fnSrc}\nreturn ownerAssigneeName`
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  return new Function(body)()
+}
+
 describe('cardIsPendingOnOwner', () => {
   it('false when there is no owner', () => {
     const fn = loadFn()
@@ -81,6 +89,38 @@ describe('cardIsPendingOnOwner', () => {
     const fn = loadFn()
     expect(fn({ status: 'waiting', assignee: 'Marveen', last_comment_author: 'AKKA' }, 'marveen')).toBe(true)
     expect(fn({ status: 'waiting', assignee: 'marveen', last_comment_author: 'MARVEEN' }, 'marveen')).toBe(false)
+  })
+})
+
+// ownerAssigneeName() feeds every "Rám vár"/"Függőségek" check (owner_btn,
+// pending_btn, syncOwnerFilterBtn, syncPendingFilterBtn, kanbanCardMatchesPendingFilter).
+// Correkt (2026-09-01, Józsi mérése): a fleet-konvenció szerint egy kártya SOHA
+// nem kerül az 'owner'-tipusú assignee-re (a kanban.ts:76-77 kommentje szerint
+// ezt kifejezetten tiltja az escalation-út -- a döntésre váró kártya a 'bot'
+// (marveen) nevén marad, ő triázsol). Emiatt az 'owner'-típusra szűrő régi
+// alak strukturálisan mindig üres eredményt adott -- a gomb nem hibás volt,
+// csak olyasmit mért, ami a konvenció szerint sosem történik meg.
+describe('ownerAssigneeName prefers the bot-type assignee over the owner-type one', () => {
+  it('returns the bot name when both a bot and an owner assignee exist', () => {
+    const fn = loadOwnerAssigneeName([
+      { name: 'Józsi', type: 'owner' },
+      { name: 'Marveen', type: 'bot' },
+      { name: 'akka', type: 'agent' },
+    ])
+    expect(fn()).toBe('Marveen')
+  })
+
+  it('falls back to the owner name when no bot-type assignee exists', () => {
+    const fn = loadOwnerAssigneeName([
+      { name: 'Józsi', type: 'owner' },
+      { name: 'akka', type: 'agent' },
+    ])
+    expect(fn()).toBe('Józsi')
+  })
+
+  it('returns null when neither a bot nor an owner assignee exists', () => {
+    const fn = loadOwnerAssigneeName([{ name: 'akka', type: 'agent' }])
+    expect(fn()).toBe(null)
   })
 })
 
