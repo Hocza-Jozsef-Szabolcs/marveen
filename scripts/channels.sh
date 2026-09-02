@@ -19,6 +19,103 @@
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --- orphan-reaper hatókör (2. pass) -----------------------------------------
+# hu: Melyik csatorna-poller a MIENK? POZITIV azonositas: a processz
+#     kornyezeteben a SAJAT telepitesi konyvtarunk all egy csatorna-definialo
+#     valtozo ERTEKENEK ELEJEN. A korabbi NEGATIV kizaras
+#     (index($0, INSTALL_DIR "/agents/") == 0) mindent kivalasztott, ami nem a
+#     sajat agents/ fank alatt volt -- tehat a szomszedos telepites osszes
+#     pollerét is. Ket telepites egy gepen (Marveen + Jarvis, KOZOS tmux
+#     szerver) igy kolcsonosen kiirtotta egymas pollerét minden ujrainditaskor.
+#     A valasztas MELLEKHATAS-MENTES, tiszta fuggveny, hogy tesztelheto legyen.
+# en: Positive ownership test instead of a negative exclusion; pure and testable.
+# $1=provider  $2=install dir  $3=state env var  $4=ps snapshot file
+select_orphan_pids() {
+  awk -v prov="/$1" \
+      -v owndir="$(printf '%s' "$2" | tr 'A-Z' 'a-z')" \
+      -v ownpfx="$(printf '%s' "$2/" | tr 'A-Z' 'a-z')" \
+      -v ownagents="$(printf '%s' "$2/agents/" | tr 'A-Z' 'a-z')" \
+      -v statevar="$(printf '%s' "$3=" | tr 'A-Z' 'a-z')" '
+    {
+      own = 0; is_agent = 0; hasroot = 0
+      for (i = 1; i <= NF; i++) {
+        t = tolower($i); e = index(t, "="); if (e == 0) continue
+        k = substr(t, 1, e); v = substr(t, e + 1)
+        if (k == "claude_plugin_root=") hasroot = 1
+        # Tulajdonos-teszt CSAK csatorna-definialo valtozokon, ERTEK-ELEJEN
+        # horgonyozva (index(...) == 1). Igy egy OLDPWD/PATH-ban veletlenul
+        # szereplo szomszed-ut nem tesz minket tulajdonossa.
+        # tolower(): MERT teny, hogy EGY processz env-je EGYSZERRE hordozza
+        # mindket betualakot -- a Jarvis-agens pollerénél
+        # TELEGRAM_STATE_DIR=/Users/ceo/jarvis/... (kisbetus) es
+        # CLAUDE_PROJECT_DIR=/Users/ceo/Jarvis/... (nagybetus). A launchd a
+        # /Users/ceo/jarvis uton inditja, a lemezen a valodi nev Jarvis.
+        # A claude_project_dir azert van a listan, mert MERVE (2026-09-02, 28
+        # elo poller) ez az EGYETLEN egyetemesen jelen levo tulajdonos-jelzo:
+        # 6 pollernek NINCS claude_config_dir-je (koztuk egy izolalt konfig
+        # nelkul indult FO polleré), claude_project_dir viszont mind a 28-nak
+        # van, es mindig a helyes telepites-/agens-gyokerre mutat. Nelkule a
+        # 2. pass sajat celpontjat -- a state-dir NELKULI arva pollert --
+        # nem tudna a mienkkent azonositani, tehat sosem takaritana el.
+        if (k == "claude_config_dir=" || k == statevar ||
+            k == "claude_plugin_root=" || k == "claude_project_dir=") {
+          # A telepitesi gyoker MAGA is tulajdonos-jel: a fo poller
+          # CLAUDE_PROJECT_DIR-je PONTOSAN az install dir, zaro / NELKUL --
+          # ezert nem eleg a "/"-re vegzodo elotag-egyezes.
+          if (v == owndir || index(v, ownpfx) == 1) own = 1
+          if (index(v, ownagents) == 1) is_agent = 1
+        }
+      }
+      if (hasroot && $0 ~ prov && own && !is_agent) print $1
+    }' "$4"
+}
+
+# hu: Korlatos, TURELMES leallitas -- SIGTERM, majd varakozas, KILL NELKUL.
+#     MERT (a telegram plugin server.ts shutdown()-jaban, 716-732. sor): a
+#     SIGTERM-kezelo a bot.pid-et AZONNAL, szinkron torli, majd `bot.stop()`-ot
+#     hiv, es a mar futo getUpdates long-poll a sajat idozitesevel ter vissza --
+#     erre ad a plugin 2000 ms-os kifutast (731. sor: setTimeout(…, 2000)).
+#     A korabbi `sleep 0.3; kill -KILL` tehat MEG a long-poll lezarasa elott
+#     ütötte le a processzt: a Telegram oldalan a lekérés nyitva maradt, es
+#     pontosan azt a 409 Conflict-ot okozta, amiert a reap egyaltalan letezik.
+#     Ezert varunk a 2 s fole, es NEM eszkalalunk SIGKILL-re.
+# en: Bounded, patient stop: SIGTERM then wait past the plugin's own 2 s
+#     drain window, no SIGKILL -- a KILL at 0.3 s cut the in-flight getUpdates
+#     long-poll, causing the very 409 Conflict the reaper exists to prevent.
+# $1.. = PID-ek
+reap_pids_gracefully() {
+  [ "$#" -gt 0 ] || return 0
+  _rpg_alive=""
+  /bin/kill -TERM "$@" 2>/dev/null || true
+
+  # 26 x 100 ms varakozas + ciklus-koltseg. MERVE (sajat, SIGTERM-et figyelmen
+  # kivul hagyo probaprocesszen): 2780 ms a felso korlat -- a plugin 2000 ms-os
+  # kifutasa FOLOTT, ahogy kell. A valaszkepes poller nem fizeti meg ezt: a
+  # ciklus azonnal kilep, amint a processz eltunt (merve: 13 ms ket pollerre).
+  _rpg_wait=0
+  while [ "$_rpg_wait" -lt 26 ]; do
+    _rpg_alive=""
+    for _rpg_p in "$@"; do
+      kill -0 "$_rpg_p" 2>/dev/null && _rpg_alive=1
+    done
+    [ -z "$_rpg_alive" ] && break
+    /bin/sleep 0.1
+    _rpg_wait=$((_rpg_wait + 1))
+  done
+
+  # Meg mindig el? Masodik SIGTERM, tovabbra sem KILL.
+  [ -n "$_rpg_alive" ] && { /bin/kill -TERM "$@" 2>/dev/null || true; }
+  unset _rpg_wait _rpg_alive _rpg_p
+  return 0
+}
+
+# Teszt-varrat: kiirja a kivalasztott PID-eket es kilep MINDEN mellekhatas
+# (.env-olvasas, mkdir, tmux) ELOTT.
+if [ "${1:-}" = "--select-orphan-pids" ]; then
+  select_orphan_pids "$2" "$3" "$4" "$5"
+  exit 0
+fi
+
 # Read MAIN_AGENT_ID and CHANNEL_PROVIDER from .env WITHOUT exporting
 # every variable into the shell environment. `set -a && source .env`
 # would also export TELEGRAM_BOT_TOKEN, which then leaks into the tmux
@@ -611,10 +708,7 @@ MAIN_CHAN_DIR="$MAIN_CHAN_STATE_DIR"
 ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
 if [ -n "$ORPHAN_PIDS" ]; then
   # shellcheck disable=SC2086
-  /bin/kill -TERM $ORPHAN_PIDS 2>/dev/null || true
-  /bin/sleep 0.3
-  # shellcheck disable=SC2086
-  /bin/kill -KILL $ORPHAN_PIDS 2>/dev/null || true
+  reap_pids_gracefully $ORPHAN_PIDS
 fi
 
 # Second reap pass for plugin builds that DON'T set *_STATE_DIR in the poller
@@ -623,25 +717,26 @@ fi
 # across restarts -> multiple getUpdates long-polls -> 409 Conflict -> the bot
 # goes silent/flaky.
 #
-# Scope to THIS (main) agent only. The tmux server is SHARED across the fleet,
-# and every sub-agent runs its OWN provider poller out of
-# $INSTALL_DIR/agents/<name>/. Those processes carry that agent dir in their
-# environment; the main agent's pollers do not. CLAUDE_PLUGIN_ROOT points at the
-# shared user-level plugin cache for every agent, so it cannot tell main from
-# sub on its own -- without the agents/ exclusion this pass SIGKILLs every live
-# sub-agent poller on a main restart (they would only recover on each
-# sub-agent's own next restart). A main orphan from an old build has no agent
-# dir, so it is still reaped. index() is a literal (non-regex) substring test so
-# an install path with regex metacharacters can't break the exclusion. The var
-# is named `subdir` (not `sub`) because `sub` is a reserved awk function name and
-# BSD/macOS awk syntax-errors on it.
-ORPHAN_PIDS2="$(/bin/ps eww -e 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="/${CHANNEL_PROVIDER}" -v subdir="${INSTALL_DIR}/agents/" '$0 ~ needle && $0 ~ prov && index($0, subdir) == 0 { print $1 }')"
+# Scope to THIS (main) agent only. The tmux server is SHARED across the fleet
+# -- and NEM CSAK a sajat flottankkal: egy gepen tobb TELEPITES is fut
+# (/Users/ceo/Marveen es /Users/ceo/jarvis), es a masik telepites pollerei is
+# ugyanannak a tmux szervernek a leszarmazottai. Minden al-ugynok a SAJAT
+# pollerét futtatja a $INSTALL_DIR/agents/<nev>/ alol, es a CLAUDE_PLUGIN_ROOT
+# minden ugynoknel a KOZOS, felhasznaloi szintu plugin-cache-re mutat, tehat
+# onmagaban nem valasztja szet sem a fo/al, sem a telepites-hatart.
+# A valasztast ezert a select_orphan_pids POZITIV tulajdonos-tesztje vegzi
+# (fentebb, a definiciojanal all a reszletes indoklas es a meres).
+#
+# A kimenet a $_ps_snap pillanatkepbol keszul, hogy a szelektor tiszta
+# fuggveny maradhasson (fajl-bemenet), es a teszt ugyanazt a magot hajthassa.
+_ps_snap="$INSTALL_DIR/store/.channels-ps.$$"
+mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+/bin/ps eww -e 2>/dev/null > "$_ps_snap"
+ORPHAN_PIDS2="$(select_orphan_pids "$CHANNEL_PROVIDER" "$INSTALL_DIR" "$STATE_ENV_VAR" "$_ps_snap")"
+rm -f "$_ps_snap"; unset _ps_snap
 if [ -n "$ORPHAN_PIDS2" ]; then
   # shellcheck disable=SC2086
-  /bin/kill -TERM $ORPHAN_PIDS2 2>/dev/null || true
-  /bin/sleep 0.3
-  # shellcheck disable=SC2086
-  /bin/kill -KILL $ORPHAN_PIDS2 2>/dev/null || true
+  reap_pids_gracefully $ORPHAN_PIDS2
 fi
 
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
