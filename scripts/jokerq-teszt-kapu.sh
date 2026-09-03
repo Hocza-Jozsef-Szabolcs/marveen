@@ -51,7 +51,25 @@ set -uo pipefail
 
 readonly CDefaultRepo='/Users/ceo/Source/github.com/QCassa.com/JokerQ'
 readonly CTestProject='tests/JokerQ.Test/JokerQ.Test.csproj'
-readonly CConfiguration='Debug'
+
+# hu: A MERT EGYSEG NEM EGY KONFIGURACIO, HANEM A LISTAJUK. A burkolo a JokerQ repo
+#     `scripts/dotnet-gate-all-configs.sh` szkriptjet hivja, ami a keszletet TOBB
+#     build-konfiguracioban futtatja vegig. Hogy MELYEKBEN, azt a JokerQ repo donti el es a
+#     `TTestSuiteConfigurationCoverageGateTests` architektura-teszt orzi -- ide beegetve ket
+#     igazsag-forras lenne, ami szetcsuszik.
+#
+#     MIERT NEM EGY KONFIGURACIO: a burkolo korabban `-c Debug`-gal mert. A `DefineConstants`
+#     viszont konfiguraciónkent MAS kodagat fordit be, es a kulonbseg mar termelt eles hibat
+#     (#1391: a bejelentkezo kepernyo PIN-mezoje `AE Release`-ben eltunt, `AE Debug`-ban nem --
+#     nulla teszt bukott, harom napig).
+# en: THE MEASURED UNIT IS NOT ONE CONFIGURATION BUT THEIR LIST. The wrapper calls the JokerQ
+#     repo's `scripts/dotnet-gate-all-configs.sh`, which runs the suite in SEVERAL build
+#     configurations. WHICH ones is decided in the JokerQ repo and guarded by
+#     `TTestSuiteConfigurationCoverageGateTests` -- hardcoding them here would create a second
+#     source of truth that drifts.
+readonly CAllConfigsGate='scripts/dotnet-gate-all-configs.sh'
+readonly CSummaryFailToken='MINDEN-KONFIG: [FAIL]'
+readonly CSummaryPassToken='MINDEN-KONFIG: [OK]'
 
 # hu: Hany reszletsort viszunk ki egy piros verdikt melle. A csonkitas melle a TELJES darabszam is
 #     kimegy -- enelkul a csonk es a "csak ennyi volt" megkulonboztethetetlen.
@@ -174,8 +192,8 @@ main() {
         red "a repo nem letezik ('$CRepo') -- ez mérés-hiány, nem zold eredmeny."
     fi
 
-    if [ ! -r "$CRepo/scripts/dotnet-gate.sh" ]; then
-        red "a kapu-szkript nem olvashato ('$CRepo/scripts/dotnet-gate.sh') -- ez mérés-hiány, nem zold eredmeny."
+    if [ ! -r "$CRepo/$CAllConfigsGate" ]; then
+        red "a kapu-szkript nem olvashato ('$CRepo/$CAllConfigsGate') -- ez mérés-hiány, nem zold eredmeny."
     fi
 
     if [ ! -r "$CRepo/$CTestProject" ]; then
@@ -204,12 +222,18 @@ main() {
 
     # hu: A mert parancs kodja a csovezetek ELSO tagjae -- a `tee` mindig sikeres.
     # en: The measured command's code belongs to the FIRST member of the pipeline -- `tee` always succeeds.
-    ( cd "$CRepo" && bash scripts/dotnet-gate.sh test "$CTestProject" -c "$CConfiguration" ) 2>&1 | tee "$log"
+    ( cd "$CRepo" && bash "$CAllConfigsGate" ) 2>&1 | tee "$log"
     local rc="${PIPESTATUS[0]}"
 
+    # hu: AZ OSSZEGZo TOKENRE nezunk, nem a reszverdiktekre. A naploban konfiguraciónkent all egy
+    #     `KAPU: [OK]`/`[FAIL]` sor is; egy `head -n 1` azok kozul az ELSoT venne, vagyis egy
+    #     harom-konfiguracios futast az elso konfiguracio eredmenyekent jelentene.
+    # en: WE READ THE SUMMARY TOKEN, not the partial verdicts. The log also holds one
+    #     `KAPU: [OK]`/`[FAIL]` line per configuration; a `head -n 1` would take the FIRST of
+    #     those, reporting a three-configuration run as the result of the first one.
     local verdictFail verdictPass
-    verdictFail="$(grep -aF 'KAPU: [FAIL]' "$log" | head -n 1)"
-    verdictPass="$(grep -aF 'KAPU: [OK]' "$log" | head -n 1)"
+    verdictFail="$(grep -aF "$CSummaryFailToken" "$log" | head -n 1)"
+    verdictPass="$(grep -aF "$CSummaryPassToken" "$log" | head -n 1)"
 
     if [ "$rc" -ne 0 ] || [ -n "$verdictFail" ]; then
         print_red_details "$log"
