@@ -543,6 +543,29 @@ const PERMISSION_OPTION_RX = /^\s*(?:❯\s*)?1\.\s*Yes\b/m
 const PERMISSION_FOOTER_REGION_LINES = 12
 
 /**
+ * Drop trailing blank lines before the footer window is taken.
+ *
+ * The prompt card is NOT always at the bottom of the pane. When the
+ * conversation is shorter than the window -- a freshly spawned session whose
+ * FIRST tool call needs consent, which is every card handover -- the TUI draws
+ * the card right under the banner and leaves the rest of the pane blank
+ * (measured on a live v2.1.259 pane: 18 blank lines below the footer line,
+ * fixtures/pane/permission-prompt-bash-top-rendered.txt). Counting the window
+ * from the physical bottom then lands entirely in that blank tail and the
+ * prompt is missed, which is the silent case: pane state 'unknown' (the router
+ * will not deliver), detectsBlockingMenu false (no menu alert either), so the
+ * session waits with nothing said about it.
+ *
+ * Trailing blanks only -- the window itself stays bounded, so a quoted prompt
+ * further up the scrollback is still out of reach.
+ */
+function withoutTrailingBlankLines(lines: string[]): string[] {
+  let end = lines.length
+  while (end > 0 && lines[end - 1].trim() === '') end--
+  return lines.slice(0, end)
+}
+
+/**
  * True when the pane is parked on a Claude Code tool-permission prompt.
  *
  * Pure + dependency-free. Recognises the shape measured on a live pane
@@ -554,7 +577,7 @@ export function detectsPermissionPrompt(pane: string): boolean {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(pane)) return false
   }
-  const lines = pane.split('\n')
+  const lines = withoutTrailingBlankLines(pane.split('\n'))
   const footerRegion = lines.slice(-PERMISSION_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
