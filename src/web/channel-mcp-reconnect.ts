@@ -7,7 +7,7 @@ import { agentSessionName, capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { getProvider, type ChannelProviderType } from '../channel-provider.js'
 import { tryAcquireSessionSendLane } from './session-send-lock.js'
-import { paneLooksIdle, detectPaneState } from '../pane-state.js'
+import { paneLooksIdle, detectPaneState, paneContainsIgnoringWrap } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
 const MAX_UP_ATTEMPTS = 8
@@ -80,12 +80,6 @@ export function resolveAgentProviderType(agentName: string): ChannelProviderType
   const perAgent = readAgentChannelProvider(agentName)
   if (perAgent === 'slack' || perAgent === 'telegram') return perAgent
   return CHANNEL_PROVIDER
-}
-
-function getPluginPattern(providerType: ChannelProviderType): RegExp {
-  const provider = getProvider(providerType)
-  const escaped = provider.pluginPaneId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(escaped, 'i')
 }
 
 // Max Down presses we'll spend trying to land the cursor on the target
@@ -175,7 +169,7 @@ export function chooseSubmenuTarget(pane: string): RegExp | null {
 export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
   const session = resolveAgentSession(agentName)
   const providerType = resolveAgentProviderType(agentName)
-  const pluginPattern = getPluginPattern(providerType)
+  const pluginPaneId = getProvider(providerType).pluginPaneId
 
   // Idle-guard: NEVER drive the /mcp menu (which starts by pressing Escape and
   // then navigates Up/Enter/Down) into a pane that is actively generating. The
@@ -227,7 +221,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
 
       const pane = capturePane(session)
       lastListPane = pane
-      if (pane && pluginPattern.test(pane)) {
+      if (pane && paneContainsIgnoringWrap(pane, pluginPaneId)) {
         matchedAt = upCount
         break
       }
@@ -237,7 +231,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
 
     if (matchedAt < 0) {
       logger.warn(
-        { agentName, session, maxUpAttempts: MAX_UP_ATTEMPTS, pluginPattern: pluginPattern.source, paneTail: paneTail(lastListPane) },
+        { agentName, session, maxUpAttempts: MAX_UP_ATTEMPTS, pluginPaneId, paneTail: paneTail(lastListPane) },
         'channel-mcp-reconnect: plugin submenu not found',
       )
       dismissMcpMenu(session)

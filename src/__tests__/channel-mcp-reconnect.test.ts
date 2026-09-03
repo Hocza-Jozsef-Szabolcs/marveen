@@ -348,6 +348,57 @@ describe('attemptChannelMcpReconnect', () => {
     expect(fields.paneTail).toContain('Reconnect')
   })
 
+
+  // ---------------------------------------------------------------------
+  // A TUI SZO KOZEPEN tori a plugin-azonositot.
+  //
+  // MERES (2026-09-02, elo agent-akka es agent-rendezo pane, 80x50, csak
+  // olvasas): `tmux capture-pane -p` es `tmux capture-pane -p -J` kimenete
+  // jobbra trimmelve BAJTAZONOS (50/50 sor, 0 eltero sor). A `-J` tehat ezt
+  // NEM javitja: csak azokat a sorokat fuzi ossze, amelyeket a terminal
+  // AUTOMATIKUS tordelese jelolt meg wrap-flaggel, a Claude Code TUI viszont
+  // minden sort explicit kurzor-pozicionalassal rajzol ki, igy egyetlen sora
+  // sem kap wrap-jelolest. Az egyetlen merheto hatasa, hogy megorzi a zaro
+  // feherkozt.
+  //
+  // A 24 karakteres `plugin:telegram:telegram` tu tehat keskeny pane-en
+  // ketteszakad, es semmilyen osszefuggo-reszszoveg illesztes nem talal ra --
+  // fuggetlenul attol, hogy a plugin ott van-e a listaban.
+  const WRAPPED_TELEGRAM_SUBMENU = [
+    '  Plugin:telegram:te',
+    '  legram MCP Server',
+    '',
+    '  Status:           \u2717 failed',
+  ].join('\n')
+
+  it('megtalalja a plugint akkor is, ha a TUI szo kozepen tordelte az azonositot', () => {
+    mockCapturePane
+      .mockReturnValueOnce('/mcp menu')
+      .mockReturnValueOnce(WRAPPED_TELEGRAM_SUBMENU)
+      .mockReturnValueOnce(SUBMENU_FAILED_TOP)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('Reconnect')
+  })
+
+  it('hamis-pozitiv ellenproba: a slack pane lapitva SEM illeszkedik a telegram ture', () => {
+    mockCapturePane.mockReturnValueOnce('/mcp menu')
+    for (let i = 0; i < 8; i++) {
+      mockCapturePane.mockReturnValueOnce([
+        '  Plugin:slack-channel:marveen-mar',
+        '  ketplace MCP Server',
+        '  Status:           \u2717 failed',
+      ].join('\n'))
+    }
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('not found')
+  })
+
   it('uses correct session for sub-agents', () => {
     mockCapturePane
       .mockReturnValueOnce('/mcp')

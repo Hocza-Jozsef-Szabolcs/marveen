@@ -317,6 +317,42 @@ export function mainAgentChannelsLinkTarget(
   return existsFn(target) ? target : null
 }
 
+/**
+ * hu: BARMELY ugynok csatorna-allapot konyvtaranak celja az izolalt config
+ *     dirben. A fo ugynoknel telepitesenkent kulon (mainAgentChannelsLinkTarget);
+ *     minden mas fejnel a fej SAJAT allapota: <agentDir>/.claude/channels/<provider>.
+ *
+ *     Miert kell a nem-fo ag: a plugin-szerver az allapot-konyvtarat UTVONALBOL
+ *     oldja fel, ha nincs <PROVIDER>_STATE_DIR env (telegram/0.0.7/server.ts:27-28:
+ *     CLAUDE_CONFIG_DIR/channels/<provider>). A fej sajat pollere hordoz explicit
+ *     env-et, DE a fej alatt indulo egyeb szerver-peldanyok (Task-subagens
+ *     MCP-szervere) nem -- azok a globalis symlinken at a FO ELES allapotra
+ *     estek, es annak bot.pid-jere futtattak a plugin arva-poller-oleset.
+ *
+ *     null-t ad, ha a cel-konyvtar MEG NEM letezik -- ilyenkor a hivo a korabbi
+ *     globalis symlinket hagyja meg, hogy egy meglevo telepites soha ne nezzen
+ *     ures konyvtarba.
+ * <br />
+ * en: Target for ANY agent's channel state inside its isolated config dir: the
+ *     per-install dir for the MAIN agent, the agent's OWN state dir otherwise.
+ *     Null while the target does not exist yet, so the caller keeps the old link.
+ */
+export function agentChannelsLinkTarget(
+  provider: ChannelProviderType,
+  agentId: string,
+  isMain: boolean,
+  agentDirPath: string,
+  existsFn: (path: string) => boolean = existsSync,
+): string | null {
+  if (!agentId) return null
+  if (isMain) return mainAgentChannelsLinkTarget(provider, agentId, existsFn)
+  if (!agentDirPath) return null
+
+  const target = channelStateDir(provider, agentDirPath)
+
+  return existsFn(target) ? target : null
+}
+
 export function ensureIsolatedChannelConfigDir(
   name: string,
   // null = channel-less agent: provision the isolated dir with EVERY channel
@@ -497,15 +533,20 @@ function provisionIsolatedConfigDir(
     //    stale non-symlink (e.g. a prior copy, or a .credentials.json left by an
     //    earlier build) is removed so it can never shadow the env-var auth.
     for (const entry of readdirSync(realClaude)) {
-      // A fo ugynok csatorna-allapota telepitesenkent kulon konyvtar, ha az mar
-      // letezik. A globalis symlink itt azert veszelyes, mert ez a provisioning
-      // MINDEN indulaskor lefut -- egy kezzel szetvalasztott allapotot
-      // visszaallitana a kozosre, es a ket telepites ismet egy .env-en es egy
-      // bot.pid-en osztozna (kolcsonos orphan-kill + watchdog restart-ciklus).
-      // A sub-agentek nem ide tartoznak: ok a spawn-kori TELEGRAM_STATE_DIR
-      // env-bol dolgoznak (lasd agent-process spawn), a symlink naluk kozombos.
-      if (entry === 'channels' && isMain && providerType) {
-        const chanTarget = mainAgentChannelsLinkTarget(providerType, name)
+      // A csatorna-allapot konyvtar SOHA nem mutathat a kozos ~/.claude/channels-re.
+      // Ott a `telegram -> telegram-marveen` symlink miatt a feloldas a FO ELES
+      // allapotra fut ki, es a plugin-szerver (server.ts) env nelkul EBBOL veszi a
+      // bot-tokent es a bot.pid-et -- majd az arva-poller-oles SIGTERM-mel kiloveszi
+      // a fo pollert (tulajdonos-ellenorzes nelkul).
+      //
+      // A fo ugynoknel a cel telepitesenkent kulon (ket telepites ne osztozzon egy
+      // .env-en / bot.pid-en; ez a provisioning MINDEN indulaskor lefut, tehat a
+      // globalis symlink egy kezzel szetvalasztott allapotot is visszaallitana a
+      // kozosre). MINDEN mas fejnel a fej SAJAT allapota a cel -- a fej pollere
+      // ugyan explicit <PROVIDER>_STATE_DIR-t kap a paneljebol, de az alatta
+      // indulo Task-subagens MCP-szerverei NEM oroklik, es utvonalbol oldanak fel.
+      if (entry === 'channels' && providerType) {
+        const chanTarget = agentChannelsLinkTarget(providerType, name, isMain, cwd)
 
         if (chanTarget) {
           const chanDir = join(cfg, entry)

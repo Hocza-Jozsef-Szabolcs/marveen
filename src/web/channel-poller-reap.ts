@@ -153,6 +153,19 @@ export function buildPollerEvidence(
 
   const candidates = new Set<number>(envScanPids)
   if (botPid != null) candidates.add(botPid)
+  // A claude processz MAGA is kielegiti az env-tut: a *_STATE_DIR az O
+  // kornyezeteben is ott van, ezert az env-scan visszaadja, es az
+  // `isUnderClaude` mar az elso iteracioban (`cur === claudePid`) igazat ad ra.
+  // Igy a verdikt a produkcios uton MINDIG 'in-tree' lett -- vagyis a lelet azt
+  // allitotta, hogy a liveness-probe hibas, holott poller egyaltalan nem elt.
+  // A claude nem poller, ezert nem bizonyitek.
+  //
+  // MERVE (2026-09-02, ujramerheto:
+  //   grep -h 'Plugin-down FORENSICS' store/app.2026-*.log
+  // ): 148 rekordbol 148 'in-tree', mind a 148-ban botPid=null, 142-ben
+  // envScanPids PONTOSAN [claudePid]. Valodi (nem-claude) poller-sor mindossze
+  // 2 rekordban volt.
+  candidates.delete(claudePid)
 
   const rows: PollerEvidenceRow[] = []
   for (const pid of candidates) {

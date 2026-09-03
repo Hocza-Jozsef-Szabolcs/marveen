@@ -37,6 +37,7 @@ import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { tryAcquireSessionSendLane } from './session-send-lock.js'
+import { paneContainsIgnoringWrap } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -138,6 +139,34 @@ function hasBunChild(claudePid: number): boolean {
 // screen, the unlock keystrokes would land in the wrong context. (b) we
 // never send keystrokes if `bun` *is* running - that would risk toggling
 // the plugin into Disable, exactly the 2026-06-01 18:55 root cause.
+/**
+ * hu: Latszik-e a pane-en a "bypass permissions on" tetlen-lablec (a Claude Code
+ *     TUI altal ket sorra -- akar szo kozepen -- tordelt alakban is). A tmux
+ *     `-J` erre nem megoldas: merve 2026-09-02 az elo agent-akka es
+ *     agent-rendezo pane-en (80x50) a `capture-pane -p` es a `-p -J` kimenete
+ *     jobbra trimmelve BAJTAZONOS, mert a `-J` csak a terminal automatikus
+ *     tordelese altal wrap-flaggel jelolt sorokat fuzi ossze -- a Claude Code
+ *     viszont minden sort explicit kurzor-pozicionalassal rajzol ki.
+ * en: Whether the pane shows the idle bypass-permissions footer (wrap-safe;
+ *     tmux -J does not rejoin TUI-rendered rows).
+ */
+export function paneShowsIdleFooter(pane: string): boolean {
+  // Feherkoz-mentes illesztes: a TUI a lablecet SZO KOZEPEN is eltorheti
+  // ("bypass permis" / "sions on"), es a `\s*`-os alak csak a szohatarra eso
+  // torest fogna meg. A tmux `-J` egyikre sem megoldas (merve 2026-09-02).
+  return paneContainsIgnoringWrap(pane, 'bypass permissions on')
+}
+
+/**
+ * hu: Szerepel-e a szolgaltato-azonosito a /mcp lista pane-jen (tordeles-turo).
+ *     Teves "absent" verdikt eseten a down-kaszkad EGY probalkozasra vagja a
+ *     restart-budzset, ezert itt a tordeles nem kozmetikai kerdes.
+ * en: Whether the provider slug appears in the /mcp list pane (wrap-safe).
+ */
+export function paneListsProvider(pane: string, provider: string): boolean {
+  return paneContainsIgnoringWrap(pane, provider)
+}
+
 function isSessionReadyForUnlock(session: string): boolean {
   try {
     const pane = execFileSync(TMUX, ['capture-pane', '-t', session, '-p'], {
@@ -147,7 +176,7 @@ function isSessionReadyForUnlock(session: string): boolean {
     // Idle footer: claude renders this footer line once the TUI is ready
     // for input. Matches the empirical signature used by detectPaneState
     // for the 'idle' state.
-    if (!/bypass permissions on/.test(pane)) return false
+    if (!paneShowsIdleFooter(pane)) return false
     // Refuse if any modal is visible.
     if (/Resume from summary/.test(pane)) return false
     if (/Open System Settings/.test(pane)) return false
@@ -181,7 +210,7 @@ function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): v
       try { execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
       return
     }
-    if (!paneAfterOpen.includes(provider)) {
+    if (!paneListsProvider(paneAfterOpen, provider)) {
       // Plugin is not in the MCP list (never loaded, not Failed/disabled) --
       // the unlock sequence cannot help and would target the wrong entry.
       logger.warn({ session, provider }, 'channel-plugin-unlock: provider plugin absent from /mcp list -- skipping unlock (plugin never loaded, not recoverable via /mcp)')

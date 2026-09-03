@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parsePollerPidsFromPs, findOrphanChannelClaudes, type ProcRow } from '../web/channel-poller-reap.js'
+import { parsePollerPidsFromPs, findOrphanChannelClaudes, buildPollerEvidence, type ProcRow } from '../web/channel-poller-reap.js'
 
 // Sample rows captured from a real `ps eww -e` on macOS during the
 // 2026-06-01 channel-disconnect incident. The bun poller, the slack
@@ -147,5 +147,83 @@ describe('findOrphanChannelClaudes', () => {
       { pid: 76621, ppid: 35874, command: `${CLAUDE} --channels plugin:telegram@claude-plugins-official` },
     ]
     expect(findOrphanChannelClaudes(allLive, new Set([76621]))).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildPollerEvidence -- a lelet, ami MINDIG 'in-tree'-t mondott.
+//
+// A forensics-rekordok merese (2026-09-02, ujramerheto:
+//   grep -h 'Plugin-down FORENSICS' store/app.2026-*.log | jq -s ...
+// ): 148 rekordbol 148 'in-tree', mind a 148-ban botPid=null, 142-ben
+// envScanPids PONTOSAN [claudePid]. Valodi (nem-claude) poller-sor mindossze
+// 2 rekordban volt (claudePid 44070 es 61278). Vagyis 146 esetben egyaltalan
+// nem elt poller, a verdikt megis azt allitotta, hogy a liveness-probe hibas.
+//
+// Ok: a TELEGRAM_STATE_DIR a CLAUDE processz kornyezeteben is ott van, ezert a
+// claudePid maga is bekerul az env-scan jelolt-halmazaba -- es onmaganak
+// osose, tehat inClaudeTree=true. A claude NEM poller.
+const CLAUDE_CMD = '/opt/homebrew/bin/claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official'
+
+describe('buildPollerEvidence', () => {
+  it('no-poller: csak a claude maga van a scanben (a naplo 146/148 rekordjanak alakja)', () => {
+    // Szo szerinti atirata egy valodi rekordnak (store/app.2026-09-01.1.log,
+    // agent=akka): claudePid=52947, ppid=1527 (a tmux szerver), botPid=null,
+    // envScanPids=[52947]. Bun gyerek SEHOL.
+    const ev = buildPollerEvidence(
+      [{ pid: 52947, ppid: 1527, command: CLAUDE_CMD }],
+      null,
+      [52947],
+      52947,
+    )
+    expect(ev.interpretation).toBe('no-poller')
+    expect(ev.rows).toEqual([])
+  })
+
+  it('in-tree: valodi bun gyerek a claude alatt (a naplo 2/148 rekordja)', () => {
+    // store/app.2026-*.log, agent=backend: claudePid=44070,
+    // envScanPids=[44070,44156,44166]; a 44156 egy bun gyerek (ppid=44070),
+    // a 44166 mar nincs benne a ps-pillanatkepben.
+    const ev = buildPollerEvidence(
+      [
+        { pid: 44070, ppid: 1527, command: CLAUDE_CMD },
+        { pid: 44156, ppid: 44070, command: '/Users/ceo/.bun/bin/bun server.ts' },
+      ],
+      null,
+      [44070, 44156, 44166],
+      44070,
+    )
+    expect(ev.interpretation).toBe('in-tree')
+    expect(ev.rows).toEqual([{ pid: 44156, ppid: 44070, inClaudeTree: true }])
+  })
+
+  it('orphaned: elo poller a claude-fan KIVUL', () => {
+    const ev = buildPollerEvidence(
+      [
+        { pid: 44070, ppid: 1527, command: CLAUDE_CMD },
+        // Reparentelt, egy korabbi claude-tol maradt poller: ppid = a tmux szerver.
+        { pid: 30001, ppid: 1527, command: '/Users/ceo/.bun/bin/bun server.ts' },
+      ],
+      null,
+      [44070, 30001],
+      44070,
+    )
+    expect(ev.interpretation).toBe('orphaned')
+    expect(ev.rows).toEqual([{ pid: 30001, ppid: 1527, inClaudeTree: false }])
+  })
+
+  it('a bot.pid-bol jott poller tovabbra is szamit (nem a claude az)', () => {
+    const ev = buildPollerEvidence(
+      [
+        { pid: 44070, ppid: 1527, command: CLAUDE_CMD },
+        { pid: 44156, ppid: 44070, command: '/Users/ceo/.bun/bin/bun server.ts' },
+      ],
+      44156,
+      [44070],
+      44070,
+    )
+    expect(ev.interpretation).toBe('in-tree')
+    expect(ev.botPidAlive).toBe(true)
+    expect(ev.rows.map((r) => r.pid)).toEqual([44156])
   })
 })

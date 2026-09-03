@@ -76,6 +76,159 @@ CODE_META_INSERT = (
     + '\n        ...(replyToMessageId != null ? { reply_to_message_id: String(replyToMessageId) } : {}),'
 )
 
+# ---------------------------------------------------------------------------
+# POLLER-SLOT OR (A1 tulajdonos-kotott stale-kill + A2 poller-gate)
+#
+# MIERT: egy bot-tokenre a Telegram EGY getUpdates-fogyasztot enged. A
+# nem-csatorna sessionok (Task-subagens, ad-hoc terminal) MCP-szervere
+# TELEGRAM_STATE_DIR nelkul a ~/.claude/channels/telegram symlinken at UGYANARRA
+# a FO ELES allapot-konyvtarra oldodik fel, kiolvassa a bot.pid-et, SIGTERM-mel
+# elveszi a slotot -- majd a sajat Claude Code-ja eldobja a bejovo ertesitest
+# ("not in --channels list"). A fo csatorna megnemul, a dashboard 60-240s
+# helyreallito kaszkadot futtat.
+#
+# MIND-VAGY-SEMMI: a negy horgony EGYMASRA epul (a CHANNEL_SESSION konstanst a
+# H1 vezeti be, a H2 es a H4 hasznalja). Egy fel-alkalmazott patch nem "reszben
+# jo", hanem SZINTAKTIKAILAG TOROTT server.ts -- ezert eloszor MIND A NEGY
+# horgonyt ellenorizzuk, es hianynal EGYIKET SEM alkalmazzuk.
+# ---------------------------------------------------------------------------
+MARKER_POLLER = 'MARVEEN-PATCH: poller-slot guard'
+
+# H1 -- a szulo-lanc merese es a bot.owner jelolo utjanak bevezetese.
+POLLER_H1_ANCHOR = "const PID_FILE = join(STATE_DIR, 'bot.pid')"
+POLLER_H1_INSERT = POLLER_H1_ANCHOR + r"""
+const OWNER_FILE = join(STATE_DIR, 'bot.owner')
+
+// MARVEEN-PATCH: poller-slot guard
+// Egy bot-tokenre a Telegram EGY getUpdates-fogyasztót enged. A nem-csatorna
+// sessionök (Task-subagens, ad-hoc terminál) MCP-szervere ugyanezt az
+// állapot-könyvtárat oldja fel, elveszi a slotot, majd a saját Claude Code-ja
+// eldobja a bejövő értesítést ("not in --channels list") -- a fő csatorna
+// megnémul. Ezért a szülő-láncban megkeressük az ELSŐ claude processzt, és
+// csak akkor pollozunk, ha annak a parancssorában ott a '--channels'.
+// Mérve ezen a gépen: a lánc bun server.ts -> 'bun run' wrapper -> claude,
+// tehát a közvetlen szülő nem elég. A parancssorában 'claude'-ot tartalmazó
+// bash-wrapper NEM claude, ezért az argv[0] bázisneve dönt.
+// FAIL-OPEN: ha a lánc nem mérhető (ps hiba, üres sor, nincs claude a
+// láncban), null-t adunk, és pollozunk -- egy téves "ne pollozz" a fő
+// csatornát némítaná el, egy téves "pollozz" legrosszabb esetben 409
+// Conflict, amit a lenti retry-hurok kezel.
+function findChannelSessionFlag(): boolean | null {
+  let pid = process.ppid
+  for (let step = 0; step < 16 && pid > 1; step++) {
+    let line: string
+    try {
+      line = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    } catch { return null }
+    const m = line.match(/^\s*(\d+)\s+([\s\S]*)$/)
+    if (!m) return null
+    const parent = parseInt(m[1], 10)
+    const command = m[2]
+    const argv0 = command.split(' ')[0]
+    if (argv0 === 'claude' || argv0.endsWith('/claude')) return command.includes('--channels')
+    if (!Number.isFinite(parent) || parent <= 1) break
+    pid = parent
+  }
+  return null
+}
+const CHANNEL_SESSION = findChannelSessionFlag()"""
+
+# H2 -- a TELJES stale-kill blokk. SZANDEKOSAN nagy, szo szerinti horgony: ez a
+# KILOVO ut, es ha egy plugin-frissites barmit modosit rajta, a patch-oro alljon
+# meg es kerjen emberi felulvizsgalatot, ne probaljon reszlegesen illeszteni.
+# (A `mkdirSync(STATE_DIR, ...)` sor egyebkent ketszer szerepel a fajlban, tehat
+# kis horgonykent nem is lenne egyedi.)
+POLLER_H2_ANCHOR = r"""mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+try {
+  const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
+  if (stale > 1 && stale !== process.pid) {
+    process.kill(stale, 0)
+    // PID files race with OS PID recycling — verify the holder is actually a
+    // server.ts process before SIGTERM. Otherwise a recycled PID can point at
+    // our own bun-run wrapper (kills our stdin → immediate self-shutdown) or
+    // an unrelated user process.
+    const cmd = execFileSync('ps', ['-p', String(stale), '-o', 'args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    if (cmd.includes('server.ts')) {
+      process.stderr.write(`telegram channel: replacing stale poller pid=${stale}\n`)
+      process.kill(stale, 'SIGTERM')
+    }
+  }
+} catch {}
+writeFileSync(PID_FILE, String(process.pid))"""
+
+POLLER_H2_INSERT = r"""mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+let stateDirId: string
+try { stateDirId = realpathSync(STATE_DIR) } catch { stateDirId = STATE_DIR }
+if (CHANNEL_SESSION === false) {
+  // Nem-csatorna session: a bot.pid-hez hozzá sem nyúlunk -- se olvasás-kilövés,
+  // se írás. Így a bot.pid a VALÓDI poller azonosítója marad, és nem egy siket,
+  // mégis élő PID mutat "egészséges" csatornát a watchdognak.
+  process.stderr.write(
+    'telegram channel: not a --channels session — poller slot left untouched (bot.pid not read, not written)\n',
+  )
+} else {
+  try {
+    const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
+    if (stale > 1 && stale !== process.pid) {
+      process.kill(stale, 0)
+      // PID files race with OS PID recycling — verify the holder is actually a
+      // server.ts process before SIGTERM. Otherwise a recycled PID can point at
+      // our own bun-run wrapper (kills our stdin → immediate self-shutdown) or
+      // an unrelated user process.
+      const cmd = execFileSync('ps', ['-p', String(stale), '-o', 'args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      // TULAJDONOS-KÖTÖTT KILÖVÉS (fail-closed): a bot.owner a FELOLDOTT
+      // állapot-könyvtár útja. Hiányzó jelölő = a patch előtti poller -- azt
+      // visszafelé kompatibilisen a miénknek vesszük, különben a bevezetés
+      // pillanatában árva pollert hagynánk a fő csatornán.
+      let staleOwner: string | null = null
+      try { staleOwner = readFileSync(OWNER_FILE, 'utf8').trim() || null } catch {}
+      if (staleOwner !== null && staleOwner !== stateDirId) {
+        process.stderr.write(
+          `telegram channel: stale poller pid=${stale} is owned by ${staleOwner}, not ${stateDirId} — leaving it alone\n`,
+        )
+      } else if (cmd.includes('server.ts')) {
+        process.stderr.write(`telegram channel: replacing stale poller pid=${stale}\n`)
+        process.kill(stale, 'SIGTERM')
+      }
+    }
+  } catch {}
+  writeFileSync(PID_FILE, String(process.pid))
+  writeFileSync(OWNER_FILE, stateDirId)
+}"""
+
+# H3 -- a leallaskori takaritas: a jelolo a PID-del EGYUTT el.
+POLLER_H3_ANCHOR = (
+    "    if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) rmSync(PID_FILE)"
+)
+POLLER_H3_INSERT = r"""    if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) {
+      // A jelölő a PID-del EGYÜTT él. ELŐSZÖR a jelölő: ha az egyik törlés
+      // elbukik, a maradék állapot a mai (jelölő nélküli) viselkedés felé
+      // essen, ne egy idegen jelölő felé, ami tartósan blokkolná a slotot.
+      try { rmSync(OWNER_FILE) } catch {}
+      rmSync(PID_FILE)
+    }"""
+
+# H4 -- a polling-kapu. A kimeno toolok es az mcp.connect VALTOZATLANOK: a
+# valasz-kuldes HTTP-n megy, nem a polling-slotbol.
+POLLER_H4_ANCHOR = 'void (async () => {\n  for (let attempt = 1; ; attempt++) {'
+POLLER_H4_INSERT = r"""if (CHANNEL_SESSION === false) {
+  // Ez a sor mondja meg, miért néma ez a szerver. A kimenő toolok és az
+  // mcp.connect VÁLTOZATLANUL működnek -- a válasz-küldés HTTP-n megy, nem a
+  // polling-slotból.
+  process.stderr.write(
+    'telegram channel: no --channels claude in the parent process chain — polling disabled (outbound tools still work)\n',
+  )
+} else void (async () => {
+  for (let attempt = 1; ; attempt++) {"""
+
+POLLER_PATCHES = (
+    ('H1', POLLER_H1_ANCHOR, POLLER_H1_INSERT),
+    ('H2', POLLER_H2_ANCHOR, POLLER_H2_INSERT),
+    ('H3', POLLER_H3_ANCHOR, POLLER_H3_INSERT),
+    ('H4', POLLER_H4_ANCHOR, POLLER_H4_INSERT),
+)
+
 
 def candidate_paths():
     home = os.path.expanduser('~')
@@ -134,6 +287,23 @@ def patch_content(content):
             content = content.replace(CODE_META_ANCHOR, CODE_META_INSERT, 1)
             changed = True
 
+    # POLLER-SLOT OR -- MIND-VAGY-SEMMI. A negy beszuras egymasra epul, ezert
+    # eloszor MINDET ellenorizzuk, es csak hianytalan horgony-keszlet eseten
+    # irunk. Fel-alkalmazva szintaktikailag torott server.ts maradna a lemezen.
+    if MARKER_POLLER not in content:
+        missing = [name for name, anchor, _ in POLLER_PATCHES if anchor not in content]
+
+        if missing:
+            warnings.append(
+                'poller-horgony nem talalhato (' + ', '.join(missing) + ') -- a '
+                'poller-slot patch MIND-VAGY-SEMMI szabaly szerint TELJESEN kimaradt'
+            )
+        else:
+            for _, anchor, insert in POLLER_PATCHES:
+                content = content.replace(anchor, insert, 1)
+
+            changed = True
+
     return content, changed, warnings
 
 
@@ -185,7 +355,10 @@ def self_test():
     )
     patched, changed, warnings = patch_content(pristine)
     assert changed, 'pristine tartalomnak valtoznia kellett volna'
-    assert not warnings, f'varatlan figyelmeztetes: {warnings}'
+    # Ez a fixture SZANDEKOSAN csak a reply_to-regiokat tartalmazza, ezert a
+    # poller-horgonyok hianya VART figyelmeztetes -- a ket patch fuggetlen.
+    reply_warnings = [w for w in warnings if 'poller' not in w]
+    assert not reply_warnings, f'varatlan figyelmeztetes: {reply_warnings}'
     assert MARKER_DOC in patched, 'a leiro-marker hianyzik patch utan'
     assert MARKER_CODE in patched, 'a kod-marker hianyzik patch utan'
     print('[PASS] pristine -> patched, mindket marker jelen')
@@ -216,6 +389,46 @@ def self_test():
     assert patched3 == foreign, 'horgony nelkuli tartalom byte-azonos kell maradjon'
     assert warnings3, 'horgony hianyaban figyelmeztetes kell'
     print('[PASS] idegen tartalom: erintetlen + figyelmeztetes')
+
+    # 4. POLLER-SLOT OR -- fust-teszt. A TELJES matrix (idempotencia, negy
+    # kulon horgony-hiany, zarojel-merleg, vegyes eset) a dedikalt tesztben all:
+    # scripts/__tests__/telegram-plugin-patch-guard-poller.test.py, es a
+    # VISELKEDEST (a patch-elt fajl tenyleges inditasat) a
+    # scripts/__tests__/telegram-poller-slot-guard.test.py meri.
+    poller_pristine = (
+        POLLER_H1_ANCHOR + '\n\n'
+        + POLLER_H2_ANCHOR + '\n\n'
+        + POLLER_H3_ANCHOR + '\n\n'
+        + POLLER_H4_ANCHOR + '\n'
+    )
+    p4, changed4, warn4 = patch_content(poller_pristine)
+    poller_warn4 = [w for w in warn4 if 'poller' in w]
+    assert changed4, 'a poller-fixture-nek valtoznia kellett volna'
+    assert not poller_warn4, f'varatlan poller-figyelmeztetes: {poller_warn4}'
+    assert MARKER_POLLER in p4, 'a poller-marker hianyzik patch utan'
+
+    for frag in ("const OWNER_FILE = join(STATE_DIR, 'bot.owner')",
+                 'const CHANNEL_SESSION = findChannelSessionFlag()',
+                 'leaving it alone', 'poller slot left untouched',
+                 'polling disabled', 'rmSync(OWNER_FILE)'):
+        assert frag in p4, f'hianyzo beszurt reszlet: {frag!r}'
+
+    print('[PASS] poller-fixture -> patched, mind a negy beszuras jelen')
+
+    p5, changed5, _ = patch_content(p4)
+    assert not changed5, 'a poller-patch nem idempotens'
+    assert p5 == p4, 'a poller-patch masodik futasa nem bajtazonos'
+    print('[PASS] poller-patch -> idempotens')
+
+    # MIND-VAGY-SEMMI: egyetlen hianyzo horgony az EGESZ poller-patch-et
+    # visszatartja -- fel-alkalmazva torott TypeScript maradna a lemezen.
+    broken = poller_pristine.replace('void (async () => {', 'void (async function () {', 1)
+    p6, changed6, warn6 = patch_content(broken)
+    assert not changed6, 'hianyzo H4 horgony mellett SEMMIT nem szabad irni'
+    assert p6 == broken, 'hianyzo horgony eseten a tartalom bajtazonos kell maradjon'
+    assert [w for w in warn6 if 'poller' in w], 'hianyzo poller-horgonynal figyelmeztetes kell'
+    assert MARKER_POLLER not in p6, 'hianyzo horgony mellett a marker sem szivaroghat be'
+    print('[PASS] poller-patch: mind-vagy-semmi (hianyzo horgony -> nincs iras)')
 
     print('\nAll telegram-plugin-patch-guard self-tests passed.')
     return 0

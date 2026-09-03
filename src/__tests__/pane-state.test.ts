@@ -1413,7 +1413,9 @@ describe('decideStuckInputRecovery', () => {
   it('records the first sighting without recovering (confirm window)', () => {
     const d = decideStuckInputRecovery('msg-A', NONE, 10_000, TH)
     expect(d.recover).toBe(false)
-    expect(d.next).toEqual({ parkedSig: 'msg-A', firstSeenAt: 10_000, lastRecoverAt: null, attempts: 0 })
+    // lastSeenAt stamps every OBSERVATION -- it is what lets a spell survive a
+    // tick on which the box could not be read as parked (StuckInputThresholds.holdMs).
+    expect(d.next).toEqual({ parkedSig: 'msg-A', firstSeenAt: 10_000, lastRecoverAt: null, attempts: 0, lastSeenAt: 10_000 })
   })
 
   it('does not recover while still inside the confirm window', () => {
@@ -1438,7 +1440,7 @@ describe('decideStuckInputRecovery', () => {
     const prev = { parkedSig: 'msg-A', firstSeenAt: 0, lastRecoverAt: null, attempts: 0 }
     const d = decideStuckInputRecovery('msg-B', prev, 9_000, TH)
     expect(d.recover).toBe(false)
-    expect(d.next).toEqual({ parkedSig: 'msg-B', firstSeenAt: 9_000, lastRecoverAt: null, attempts: 0 })
+    expect(d.next).toEqual({ parkedSig: 'msg-B', firstSeenAt: 9_000, lastRecoverAt: null, attempts: 0, lastSeenAt: 9_000 })
   })
 
   it('suppresses a repeat recovery inside the dedup window', () => {

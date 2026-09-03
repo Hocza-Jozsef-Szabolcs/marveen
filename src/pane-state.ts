@@ -1639,6 +1639,13 @@ export interface StuckInputState {
   lastRecoverAt: number | null
   /** How many recovery Enters have been sent in the active spell. */
   attempts: number
+  /** When the parked signature was last OBSERVED. Used to keep a spell
+   * alive across ticks on which the box could not be read as parked (a
+   * busy turn mid-flight, a failed capture, a pane too narrow for the
+   * detectors), so the confirm window is not reset to zero by a single
+   * unobserved tick. Absent on a legacy-shaped state -> the spell has no
+   * memory and clears immediately, exactly as before. */
+  lastSeenAt?: number | null
 }
 
 export interface StuckInputThresholds {
@@ -1653,6 +1660,25 @@ export interface StuckInputThresholds {
    * pane still stuck after this is not the swallowed-Enter case the
    * watcher targets; further Enters would not help. */
   maxAttempts: number
+  /** How long the box must read continuously NOT-parked before an active
+   * spell is dropped. A single unobserved tick (the pane went busy for one
+   * frame, the capture failed, a split pane truncated the text away) must
+   * NOT reset the spell, otherwise a genuinely wedged but flapping session
+   * never reaches the confirm window and the whole escalation above it --
+   * recovery attempts, the restart decision, the operator alert -- is
+   * unreachable. This is the same guarantee the sibling machine in this
+   * file already carries as PaneErrorAlertThresholds.clearMs.
+   *
+   * MEASURED (2026-09-02): without it, all 166 'Stuck-input restart
+   * deferred' log lines for marveen-channels across 9 days carry
+   * attempts=0 -- the counter never once reached 1, so
+   * decideStuckInputRestart could only ever answer 'skip' on MAIN.
+   *
+   * This widens MEMORY only, never the intervention gate: `recover` still
+   * requires the signature to be OBSERVED on the current tick, so nothing
+   * is ever typed into a pane we could not read. Default 0 = the legacy
+   * "one unobserved tick ends the spell" behaviour. */
+  holdMs?: number
 }
 
 export interface StuckInputDecision {
@@ -1702,35 +1728,48 @@ export function decideStuckInputRecovery(
   now: number,
   thresholds: StuckInputThresholds,
 ): StuckInputDecision {
-  // Nothing parked: end any active spell.
+  // Nothing parked THIS TICK. That is not the same as "the box emptied":
+  // the pane may simply have been unreadable as parked (busy mid-flight,
+  // failed capture, a split pane too narrow for the detectors). Drop the
+  // spell only after holdMs of continuously not seeing it -- see
+  // StuckInputThresholds.holdMs. A future-dated lastSeenAt (clock skew)
+  // counts as "clear now".
   if (parkedSig === null) {
-    return { recover: false, next: { ...NO_STUCK_INPUT } }
+    if (prev.parkedSig === null) return { recover: false, next: { ...NO_STUCK_INPUT } }
+    const lastSeenAt = prev.lastSeenAt ?? null
+    const unseenFor = lastSeenAt === null ? Infinity : now - lastSeenAt
+    if (unseenFor >= (thresholds.holdMs ?? 0) || unseenFor < 0) {
+      return { recover: false, next: { ...NO_STUCK_INPUT } }
+    }
+    // Hold the spell unchanged -- including lastSeenAt, so the hold window
+    // measures the time since the last real sighting, not since this tick.
+    return { recover: false, next: { ...prev } }
   }
   // New spell, or the parked text changed (still arriving / edited /
   // a different message): restart the confirm window, record only.
   if (prev.parkedSig !== parkedSig || prev.firstSeenAt === null) {
-    return { recover: false, next: { parkedSig, firstSeenAt: now, lastRecoverAt: null, attempts: 0 } }
+    return { recover: false, next: { parkedSig, firstSeenAt: now, lastRecoverAt: null, attempts: 0, lastSeenAt: now } }
   }
   // Backwards clock skew: a stored timestamp in the future relative to
   // now would drive the deltas negative and stall. Restart the spell.
   if (now < prev.firstSeenAt || (prev.lastRecoverAt !== null && now < prev.lastRecoverAt)) {
-    return { recover: false, next: { parkedSig, firstSeenAt: now, lastRecoverAt: null, attempts: 0 } }
+    return { recover: false, next: { parkedSig, firstSeenAt: now, lastRecoverAt: null, attempts: 0, lastSeenAt: now } }
   }
   // Retry budget spent: hold without acting.
   if (prev.attempts >= thresholds.maxAttempts) {
-    return { recover: false, next: { ...prev } }
+    return { recover: false, next: { ...prev, lastSeenAt: now } }
   }
   // Confirm window not yet elapsed.
   if (now - prev.firstSeenAt < thresholds.confirmMs) {
-    return { recover: false, next: { ...prev } }
+    return { recover: false, next: { ...prev, lastSeenAt: now } }
   }
   // Dedup gap between recovery Enters.
   if (prev.lastRecoverAt !== null && now - prev.lastRecoverAt < thresholds.dedupMs) {
-    return { recover: false, next: { ...prev } }
+    return { recover: false, next: { ...prev, lastSeenAt: now } }
   }
   return {
     recover: true,
-    next: { parkedSig, firstSeenAt: prev.firstSeenAt, lastRecoverAt: now, attempts: prev.attempts + 1 },
+    next: { parkedSig, firstSeenAt: prev.firstSeenAt, lastRecoverAt: now, attempts: prev.attempts + 1, lastSeenAt: now },
   }
 }
 
@@ -2114,4 +2153,35 @@ export function paneShowsContextSaturation(capture: string): boolean {
   const lines = capture.split('\n')
   const footerRegion = lines.slice(-CTX_SAT_FOOTER_REGION_LINES).join('\n')
   return CTX_SAT_RX.test(footerRegion)
+}
+
+/**
+ * hu: Feherkoz-mentes, kisbetus alak az illesztesekhez.
+ *
+ * A Claude Code TUI keskeny pane-en a plugin-azonositot SZO KOZEPEN tori
+ * ("Plugin:telegram:te" / "legram MCP Server"), es a tmux `-J` ezt NEM javitja
+ * -- merve 2026-09-02 az elo agent-akka es agent-rendezo pane-en (80x50): a
+ * `capture-pane -p` es a `capture-pane -p -J` kimenete jobbra trimmelve
+ * BAJTAZONOS (50/50 sor, 0 eltero sor). A `-J` csak azokat a sorokat fuzi
+ * ossze, amelyeket a terminal AUTOMATIKUS tordelese jelolt meg wrap-flaggel; a
+ * Claude Code viszont minden sort explicit kurzor-pozicionalassal rajzol ki,
+ * igy egyetlen sora sem kap ilyen jelolest. A `-J` egyetlen merheto hatasa,
+ * hogy megorzi a zaro feherkozt.
+ *
+ * Ugyanezt a technikat hasznalja a `pane-state.ts` a TUI-tordelt preambulumra.
+ *
+ * en: Whitespace-flattened, lowercased form. tmux -J does NOT rejoin
+ * TUI-rendered rows (measured), so flattening is the actual fix.
+ */
+export function flattenForMatch(s: string): string {
+  return s.replace(/\s+/g, '').toLowerCase()
+}
+
+/**
+ * hu: Szerepel-e a keresett szoveg a pane-en, a TUI tordelesetol fuggetlenul
+ *     (plugin-azonosito, lablec, allapot-sor -- barmi, amit a rajzolo eltorhet).
+ * en: Whether the pane contains the needle, ignoring TUI line wrapping.
+ */
+export function paneContainsIgnoringWrap(pane: string, needle: string): boolean {
+  return flattenForMatch(pane).includes(flattenForMatch(needle))
 }

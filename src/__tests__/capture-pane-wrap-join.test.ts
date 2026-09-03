@@ -1,21 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// MEASURED (2026-08-28, card marveen-channel-gyakori-restart-20260824): all 7
-// "plugin down" episodes that day escalated all the way to stage-3 (full
-// session restart), and every stage-1 attempt logged "plugin submenu not
-// found" with a paneTail that VISIBLY shows the target plugin's submenu
-// (`Plugin:telegram:telegram MCP Server`, `Status: ✗ failed`, `Reconnect`).
-// The reason the literal `plugin:telegram:telegram` pattern still failed to
-// match: `tmux capture-pane -p` (no `-J`) hard-wraps long lines at the
-// pane's CURRENT column width, and a narrow pane (more tiled sub-agent panes
-// during a fan-out day -> narrower marveen pane) split the token itself:
-//   "Plugin:telegram:te\n   legram MCP Server"
-// A newline landing mid-token breaks any contiguous-substring match against
-// the captured text, independent of whether the plugin was actually found.
-// tmux's `-J` flag re-joins soft-wrapped lines before returning them, which
-// is the root fix -- everything downstream (channel-mcp-reconnect's
-// pluginPattern.test, channel-health-monitor's pane.includes) then sees the
-// token intact regardless of pane width.
+// A `-J` flag INERT ezen a pane-tipuson -- ez a teszt csak az argv-t rogziti.
+//
+// MERES (2026-09-02, elo agent-akka es agent-rendezo pane, 80x50, csak
+// olvasas): `tmux capture-pane -t <s> -p` es `tmux capture-pane -t <s> -p -J`
+// kimenete jobbra trimmelve BAJTAZONOS -- 50/50 sor, 0 eltero sor. A pane-en
+// atnyulo, szo kozepen tordelt tokenek EGYIK alakban SINCSENEK osszefuzve.
+//
+// Ok: a tmux `-J` csak azokat a sorokat fuzi ossze, amelyeket a terminal
+// AUTOMATIKUS tordelese jelolt meg wrap-flaggel. A Claude Code teljes kepernyos
+// rajzolo: minden sort explicit kurzor-pozicionalassal ir ki, tehat egyetlen
+// sora sem kap wrap-jelolest. A `-J` egyetlen merheto hatasa, hogy megorzi a
+// zaro feherkozt (a 0 hosszu sorbol a pane szelessegenyi szokoz lesz).
+//
+// A TUI-tordelt azonositok tenyleges javitasa ezert a FEHERKOZ-MENTES
+// illesztes (pane-state.ts `paneContainsIgnoringWrap`), nem ez a flag.
+// A `-J` a `capturePane`-ben maradhat -- artalmatlan, es hiven adja vissza a
+// zaro feherkozt --, de ez a teszt CSAK azt allitja, hogy a flag ott van az
+// argv-ben; a VISELKEDESROL semmit nem mond. A tordeles-turo illesztest a
+// channel-mcp-reconnect / channel-health-monitor / channel-plugin-unlock sajat
+// tesztjei merik.
 
 const h = vi.hoisted(() => ({ calls: [] as string[][] }))
 
@@ -34,7 +38,7 @@ beforeEach(() => {
 })
 
 describe('capturePane', () => {
-  it('passes -J to tmux capture-pane so soft-wrapped lines are rejoined', () => {
+  it('atadja a -J flaget a tmux capture-pane-nek (argv-rogzites, nem viselkedes-meres)', () => {
     capturePane('marveen-channels')
 
     const captureCall = h.calls.find(a => a.includes('capture-pane'))

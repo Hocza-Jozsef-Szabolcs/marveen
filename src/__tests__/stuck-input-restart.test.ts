@@ -100,8 +100,22 @@ describe('applyStuckRestartBusyGuard', () => {
       expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: true, softRemedy: true })).toBe('skip')
     })
 
-    it('keeps deferring for a possibly human draft (not machine-origin)', () => {
-      expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: false, softRemedy: false })).toBe('skip')
+    // 2026-09-02: this case used to answer 'skip', and that 'skip' was
+    // unbounded silence -- the cell held five scheduled tasks for 5h38m while
+    // the stack logged nothing an operator would see. Not restarting is still
+    // right (the text may be a hand-typed draft and nothing would re-deliver
+    // it), but "do not touch it" must not mean "do not mention it": the guard
+    // now escalates to the non-destructive 'alert-parked'.
+    it('never restarts a possibly human draft, but names the block instead of going silent', () => {
+      const r = applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: false, softRemedy: false })
+      expect(r).not.toBe('restart')
+      expect(r).toBe('alert-parked')
+    })
+
+    it('stays silent for a possibly human draft until soft recovery is exhausted', () => {
+      // A 'skip' decision means the retry budget is unspent (or the restart
+      // rate-limit is holding): an ordinary transient park must not alert.
+      expect(applyStuckRestartBusyGuard('typing', 'skip', { machineOrigin: false, softRemedy: false })).toBe('skip')
     })
 
     it('a busy pane always defers, carve-out or not', () => {

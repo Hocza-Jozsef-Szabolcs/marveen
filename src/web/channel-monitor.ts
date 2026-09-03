@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
-import { hostname } from 'node:os'
+import { hostname, homedir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
@@ -31,6 +31,7 @@ import {
 } from './agent-process.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
+import { mainDownedForSeconds, closeDownSpell } from './channel-down-spell.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
@@ -81,7 +82,31 @@ function resolveAgentProvider(name: string): ChannelProviderType {
 // killing it would terminate the live agent.
 
 const agentDownSince: Map<string, number> = new Map()
+// hu: Egy down-spellt CSAK az zar le, hogy a plugin ujra el -- az ujrainditas
+// NEM. A restart-ag torli az `agentDownSince` bejegyzest (KELL is: a
+// restart-dontes msDown-ja abbol szamol, es egy frissen ujrainditott agenst nem
+// szabad azonnal ujra kiloni), ezert a spell EREDETI kezdete es az addigi
+// ujrainditasok szama ide kerul at. Igy a helyreallas a TELJES spellt tudja
+// naplozni. Merve 2026-09-02: 85 "auto-restarting" sor / 11 "recovered" sor --
+// a spellek tulnyomo tobbsege nyom nelkul veszett el.
+// en: Only a live plugin closes a down-spell; a restart carries it over here.
+const agentRecoveringSince: Map<string, { spellStartedAt: number; restarts: number }> = new Map()
 const agentLastRestart: Map<string, number> = new Map()
+
+/**
+ * hu: A folyamatban levo down-spell atvitele egy ujrainditason (vagy a
+ *     feladas-agon). A spell kezdete az EREDETI marad; a `countsAsRestart`
+ *     donti el, hogy az ujrainditas-szamlalo lep-e.
+ * en: Carry the open down-spell over a restart (or the give-up branch).
+ */
+function carryDownSpellOverRestart(session: string, countsAsRestart: boolean): void {
+  const carried = agentRecoveringSince.get(session)
+  agentRecoveringSince.set(session, {
+    spellStartedAt: carried?.spellStartedAt ?? agentDownSince.get(session) ?? Date.now(),
+    restarts: (carried?.restarts ?? 0) + (countsAsRestart ? 1 : 0),
+  })
+}
+
 // Agents already warned about a missing channel token, so the per-sweep probe
 // does not repeat the identical WARN every minute forever (observed 2026-07-20:
 // teamer, an agent with no channel token bound, emitted the same line ~1440x/day
@@ -201,7 +226,7 @@ const agentStuckInput: Map<string, StuckInputState> = new Map()
 // (it submits the REAL buffer, no capture-truncation risk); re-inject is the
 // fallback for a TUI that swallows the Enter in raw-mode.
 const MAIN_STUCK_ENTER_ATTEMPTS = 2
-const MAIN_STUCK_THRESHOLDS: StuckInputThresholds = {
+export const MAIN_STUCK_THRESHOLDS: StuckInputThresholds = {
   // Same text must stay parked this long before the first recovery action so a
   // turn about to submit on its own is not pre-empted (>=2 observations at the
   // 60s tick).
@@ -210,6 +235,15 @@ const MAIN_STUCK_THRESHOLDS: StuckInputThresholds = {
   dedupMs: 45_000,
   // 2 Enters + up to 2 re-injects, then hold (logged).
   maxAttempts: 4,
+  // Keep a spell alive across ticks on which the box did not read as parked.
+  // Without it the escalation above this recovery is unreachable on MAIN:
+  // measured 2026-09-02, every one of the 166 'Stuck-input restart deferred'
+  // lines over 9 days carries attempts=0, because the main pane flaps in and
+  // out of 'typing' between heartbeats and one unobserved tick reset the
+  // spell. 5 min matches PANE_ERROR_CLEAR_MS, the sibling machine's own
+  // measured value for exactly this "flapping but genuinely wedged" case
+  // (~5 ticks at the 60 s monitor cadence).
+  holdMs: 5 * 60 * 1000,
 }
 
 // --- Stuck-input hard-restart escalation (reliable backstop) ---
@@ -225,6 +259,12 @@ const STUCK_RESTART_MIN_INTERVAL_MS = 5 * 60 * 1000
 const STUCK_RESTART_MAX_CONSECUTIVE = 3
 let stuckRestartCount = 0
 let lastStuckRestartAt = 0
+// One-shot guard for the 'alert-parked' escalation, keyed on the parked
+// SIGNATURE rather than a counter: the alert must fire once per wedge, and a
+// new/changed park is a new wedge. Deliberately NOT stuckRestartCount -- that
+// is the respawn budget, and a no-remedy alert performs no respawn, so
+// spending one there would silently shorten the real restart escalation.
+let parkedNoRemedyAlertedSig: string | null = null
 
 // Pure decision for the stuck-input restart escalation.
 //   'restart' -> soft recovery exhausted + input still parked + rate-limit ok
@@ -272,15 +312,42 @@ export function decideStuckInputRestart(
 // soft recovery has no move for it ('hold'). Everything else keeps deferring:
 // genuine 'busy', a human-looking draft, and any parked text soft recovery can
 // still submit/clear on its own.
+//
+// SILENCE CARVE-OUT (2026-09-02, 5h38m schedule outage): the carve-out above
+// closed only HALF the deadlock. It requires machineOrigin, so the other cell
+// -- no soft remedy AND no identifiable machine origin -- still answered
+// 'skip', forever. That cell is not rare: it is every one of the 166
+// 'Stuck-input restart deferred' lines logged over 9 days, and it is what the
+// stack found on 2026-09-02 18:27:57 (paneState 'typing', machineOrigin false,
+// softRemedy false) while five scheduled tasks had been blocked since 13:00.
+// It answered 'skip' and said nothing.
+//
+// Restarting that cell is NOT the answer and never will be: without a delivery
+// wrapper the parked text may be the owner's own hand-typed draft, and the
+// session-parkolt-input-recovery skill is explicit -- "Emberi draftot HAGYD
+// BEKEN." The measured 2026-09-02 park was six rows of prose with no wrapper
+// and no msg_id: nothing could have re-delivered it, so clearing, submitting
+// or respawning it would have destroyed work. What was missing is not an
+// action, it is a VOICE: 'alert-parked' names the block for the operator and
+// touches nothing. The manual remedy (a C-u batch, per that same skill) stays
+// a human decision.
+//
+// It rides the SAME escalation budget as the restart -- a 'skip' decision
+// (soft recovery not yet exhausted, or the rate limit holding) stays 'skip' --
+// so an ordinary transient park, which is the common case, never alerts.
 export function applyStuckRestartBusyGuard(
   paneState: PaneState | null,
   decision: 'restart' | 'alert' | 'skip',
   opts?: { machineOrigin: boolean; softRemedy: boolean },
-): 'restart' | 'alert' | 'skip' {
+): 'restart' | 'alert' | 'alert-parked' | 'skip' {
   if (paneState === 'busy') return 'skip'
   if (paneState === 'typing') {
-    const unrecoverable = opts != null && opts.machineOrigin && !opts.softRemedy
-    return unrecoverable ? decision : 'skip'
+    // Soft recovery still has a move (or we have no facts at all): defer.
+    if (opts == null || opts.softRemedy) return 'skip'
+    // Positively machine-injected: safe to restart (2026-07-25 carve-out).
+    if (opts.machineOrigin) return decision
+    // Uncertain origin: never destructive, but never silent either.
+    return decision === 'skip' ? 'skip' : 'alert-parked'
   }
   return decision
 }
@@ -488,7 +555,7 @@ const MENU_RECOVER_CONFIRM_MS = 45_000
 const MENU_RECOVER_DEDUP_MS = 5 * 60 * 1000
 const MENU_RECOVER_CLEAR_MS = 2 * 60 * 1000
 
-type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
+export type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
 interface MarveenDownState {
   downSince: number
   stage: MarveenRecoveryStage
@@ -1121,7 +1188,7 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   const parked = state.parkedSig !== null
   // A cleared input box ends the spell -> reset the escalation counter so the
   // next genuine wedge starts fresh (and a successful restart is not penalised).
-  if (!parked) { stuckRestartCount = 0; return }
+  if (!parked) { stuckRestartCount = 0; parkedNoRemedyAlertedSig = null; return }
   // Busy-guard: never hard-restart while the main pane is actively generating --
   // a parked <channel> block then is a busy session, not a wedge. See
   // applyStuckRestartBusyGuard. detectPaneState reads 'unknown' for an
@@ -1148,6 +1215,35 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
     )
   }
   if (action === 'skip') return
+  if (action === 'alert-parked') {
+    // Parked text soft recovery cannot move and we cannot prove it is machine-
+    // injected -- it may be Jozsi's own hand-typed draft. NOTHING is cleared,
+    // submitted or respawned here (session-parkolt-input-recovery, 3. lepes:
+    // "Emberi draftot HAGYD BEKEN"). We only NAME the block, once per wedge,
+    // so it cannot sit silent for hours the way it did on 2026-09-02.
+    if (parkedNoRemedyAlertedSig === state.parkedSig) return
+    parkedNoRemedyAlertedSig = state.parkedSig
+    const blockedForMin = state.firstSeenAt != null
+      ? Math.max(0, Math.round((Date.now() - state.firstSeenAt) / 60_000))
+      : 0
+    // First ~120 chars so the operator can recognise their own draft from the
+    // alert alone, without attaching to the session.
+    const preview = (parkedView != null ? parkedInputText(parkedView) ?? '' : '').slice(0, 120)
+    logger.error(
+      { session: MAIN_CHANNELS_SESSION, blockedForMin, rowCount: parkedView != null ? parkedInputRowCount(parkedView) : null, attempts: state.attempts },
+      'Parked MAIN input has no automatic remedy and no provable machine origin -- alerting instead of clearing (may be a human draft)',
+    )
+    sendAlert(
+      `⛔ A ${MAIN_CHANNELS_SESSION} ❯ prompt-boxaban ${blockedForMin} perce PARKOLT SZOVEG all, `
+      + `es az auto-recovery nem tud vele mit kezdeni (tobb soros, nincs benne kezbesitesi burok). `
+      + `Amig ott van, az utemezett feladatok "busy"-t kapnak es nem futnak le.\n`
+      + `NEM toroltem: lehet a Te kezzel gepelt draftod.\n`
+      + `A box eleje: ${preview || '(nem olvashato)'}\n`
+      + `Feloldas, ha nem a Tied (session-parkolt-input-recovery skill): `
+      + `for i in $(seq 75); do tmux send-keys -t ${MAIN_CHANNELS_SESSION} C-u; done`,
+    )
+    return
+  }
   if (action === 'alert') {
     logger.error({ session: MAIN_CHANNELS_SESSION }, 'Stuck main channel input survived max restart escalations -- manual intervention needed')
     sendAlert(`⛔ A ${MAIN_CHANNELS_SESSION} bemenete beragadt es ${STUCK_RESTART_MAX_CONSECUTIVE} automatikus respawn-pane sem szabaditotta ki. Kezi beavatkozas kell: inditsd ujra a ${SERVICE_ID}-channels szolgaltatast.`)
@@ -1434,10 +1530,118 @@ async function handleMarveenDown(): Promise<void> {
   }
 }
 
+// hu: A NEM-diszruptiv (soft/save) kieses felso hatara, ami folott a gazdanak
+//     meg akkor is szolunk, ha a javitas maga csendes volt.
+//
+// MERT ALAP (2026-08-24 .. 2026-09-02, n=27, ujramerheto:
+//   grep -h 'Marveen channel plugin recovered' store/app.2026-*.log
+// ): stage=soft 60 s x9 es 120 s x3; stage=resume 180 s x11, 240 s x3, 241 s x1.
+// EZEK a `downedFor` ertekek MEG a megerositett stage-1-tol szamoltak. A
+// `mainDownedForSeconds` (channel-down-spell.ts) atallitotta a szamitast az ELSO
+// eszlelesre, ami MARVEEN_DOWN_CONFIRM_MS = 120 000 ms-mal korabbi -- vagyis
+// minden mert ertek +120 s-ra tolodik:
+//   soft:   180 s x9, 240 s x3   -> a soft-ag mert MAXIMUMA 240 s
+//   resume: 300 s x11, 360 s x3, 361 s x1
+// A kuszob 60 s tartalekkal e fole ul. A predikatumot a mert eloszlason
+// lefuttatva: 300 s -> 15/27 ertesites, ebbol CSAK az idokuszob miatt 0. A nulla
+// hozzajarulas nem holt kod, hanem a kuszob helyes viselkedese -- padlot ad egy
+// szokatlanul hosszu, nem-diszruptiv kiesesre.
+// NE vidd 240 s ala: onnantol a magatol gyogyulo savot kezdene riasztani
+// (180 s-nal mind a 12 soft rekord tuzelne -> 27/27, a mai 15/27 helyett).
+// en: Upper bound of the self-healing (soft/save) band; above it we report even
+//     a non-disruptive outage.
+export const RECOVERY_LONG_OUTAGE_SEC = 300
+
+// hu: A backfill-koordinator sajat allapot-konyvtara. SZANDEKOSAN nem a
+//     megosztott `~/.claude/channels/telegram` -- azt a plugin PID-watchdogja
+//     (server.ts:62-78) tulajdonos-ellenorzes NELKUL SIGTERM-eli.
+// en: The coordinator's own state dir (never the shared plugin one).
+const COORDINATOR_PID_FILE = join(
+  homedir(), '.claude', 'channels', 'telegram-coordinator', 'coordinator.pid',
+)
+
+/**
+ * hu: Fut-e a backfill-koordinator? A pid-fajlt MERJUK (a koordinator irja
+ *     indulaskor, kilepeskor torli -- channel-coordinator.ts:143-161), nem
+ *     feltetelezzuk. Igy az ertesites szovege automatikusan atvalt, ha a gazda
+ *     kesobb betolti a launchd unitot: nem kell masodik kod-valtozas, es nem
+ *     keletkezik ket igazsag-forras.
+ *
+ *     A PID letezese NEM eleg: egy elarvult pid-fajl szama ujrahasznosulhat egy
+ *     TELJESEN MAS processzre, es akkor megint potlast igernenk. Ezert a
+ *     parancssort is megnezzuk. Ez pontosan az az ELLENPELDA, amit a telegram
+ *     plugin sajat PID-logikaja (server.ts:72) elmulaszt: ott a "tartalmazza-e a
+ *     'server.ts' szot" proba tulajdonos-ellenorzes nelkul SIGTERM-el idegen
+ *     pollereket -- ez a 27 kieses gyoker-oka.
+ * en: Is the backfill coordinator alive? Measured from its pid file, with an
+ *     ownership check on the process command line (recycled-PID guard).
+ */
+export function channelBackfillActive(pidFile: string = COORDINATOR_PID_FILE): boolean {
+  try {
+    const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10)
+
+    if (!Number.isInteger(pid) || pid <= 0) return false
+
+    // A repo sajat idiomaja a ps-hivasra: channel-poller-reap.ts:68 (/bin/ps).
+    const cmd = execFileSync('/bin/ps', ['-o', 'command=', '-p', String(pid)], {
+      timeout: 5000, encoding: 'utf-8',
+    })
+    return cmd.includes('channel-coordinator')
+  } catch {
+    // Nincs pid-fajl, olvashatatlan, vagy a PID mar nem letezik -> nem fut.
+    return false
+  }
+}
+
+/**
+ * hu: A helyreallitasi ertesites szovege, vagy `null`, ha csendben kell maradni.
+ *     Tisztan fuggvenyszeru (nincs Date.now, nincs IO), hogy merheto legyen.
+ *
+ *     POTLAST CSAK AKKOR IGERUNK, HA A KOORDINATOR TENYLEGESEN FUT. Enelkul
+ *     senki nem potol: a nativ plugin nem perzisztal poll-offsetet (mert:
+ *     `grep -n offset .../telegram/0.0.7/server.ts` -> csak entity-offset a
+ *     :314-en) es minden koteget nyugtaz, ezert amit egy idegen poller felvett,
+ *     nyugtazott, majd eldobott, az VEGLEG elveszett. A gazda egyetlen
+ *     lehetseges cselekvese ilyenkor az, hogy UJRAKULDI -- a "mindjart potolom"
+ *     pont ettol tartotta vissza.
+ * en: The recovery alert text, or null when we should stay silent. Pure.
+ */
+export function buildRecoveryAlert(opts: {
+  botName: string
+  providerLabel: string
+  stage: MarveenRecoveryStage
+  downedForSec: number
+  backfillActive: boolean
+  longOutageSec?: number
+}): string | null {
+  const longOutageSec = opts.longOutageSec ?? RECOVERY_LONG_OUTAGE_SEC
+  // A resume/hard/gave_up szint tenyleges respawnt jelent: a beszelgetes
+  // kontextusa elveszett, tehat sosem nema.
+  const disruptive = opts.stage !== 'soft' && opts.stage !== 'save'
+
+  if (!disruptive && opts.downedForSec < longOutageSec) return null
+
+  const head =
+    `✅ ${opts.botName} ${opts.providerLabel} kapcsolat helyreallt ` +
+    `(${opts.downedForSec}s kieses, ${opts.stage} szint). `
+
+  return opts.backfillActive
+    ? head + 'Ha a kieses alatt irtal es nem jott valasz, mindjart potolom.'
+    : head + 'Ha a kieses alatt irtal es egy percen belul nem jott valasz, kuldd ujra.'
+}
+
 function handleMarveenUp(): void {
+  // MERD ELOSZOR: a kovetkezo sor torli a gyanu elso eszlelesenek idejet, es a
+  // gazdanak jelentett kieses ATTOL szamol, nem a 120 s-mal kesobbi megerositett
+  // stage-1-tol.
+  const firstSeen = marveenSuspectFirstSeen
   marveenSuspectFirstSeen = null
   if (marveenDownState) {
-    const downedFor = Math.round((Date.now() - marveenDownState.downSince) / 1000)
+    const downedFor = mainDownedForSeconds({
+      nowMs: Date.now(),
+      firstSeenMs: firstSeen,
+      downSinceMs: marveenDownState.downSince,
+    })
     const stage = marveenDownState.stage
     const providerLabel = getMainAgentProvider()
     logger.info({ stage, downedFor, provider: providerLabel }, 'Marveen channel plugin recovered')
@@ -1446,13 +1650,18 @@ function handleMarveenUp(): void {
     // in-flight messages may have been dropped, so it must not be silent. Short
     // soft/save blips stay quiet, but a LONG outage is reported even when the
     // fix itself was soft: messages sent into that window went unanswered.
-    const disruptive = stage !== 'soft' && stage !== 'save'
-    if (disruptive || downedFor >= 180) {
-      sendAlert(
-        `✅ ${BOT_NAME} ${providerLabel} kapcsolat helyreallt (${downedFor}s kieses, ${stage} szint). ` +
-        `Ha a kieses alatt irtal es nem jott valasz, mindjart potolom.`,
-      )
-    }
+    // A dontes es a szoveg a `buildRecoveryAlert`-ben all (tiszta fuggveny,
+    // merheto); a potlas-igeret a koordinator MERT allapotatol fugg.
+    const text = buildRecoveryAlert({
+      botName: BOT_NAME,
+      providerLabel,
+      stage,
+      downedForSec: downedFor,
+      backfillActive: channelBackfillActive(),
+    })
+
+    if (text) sendAlert(text)
+
     marveenDownState = null
   }
 }
@@ -1693,10 +1902,16 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // deafness blind spot). Cross-check the keep-alive freshness.
           checkMainKeepaliveStaleness()
         } else {
-          if (agentDownSince.has(t.session)) {
-            logger.info({ session: t.session, provider: t.provider }, 'Agent channel plugin recovered')
-            agentDownSince.delete(t.session)
+          const closed = closeDownSpell({
+            nowMs: Date.now(),
+            downSinceMs: agentDownSince.get(t.session) ?? null,
+            recovering: agentRecoveringSince.get(t.session) ?? null,
+          })
+          if (closed) {
+            logger.info({ session: t.session, provider: t.provider, ...closed }, 'Agent channel plugin recovered')
           }
+          agentDownSince.delete(t.session)
+          agentRecoveringSince.delete(t.session)
           // Healthy observation clears the exponential back-off so the next
           // down-spell starts again at the base grace.
           agentRestartFailures.delete(t.agentName!)
@@ -1791,6 +2006,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             : `⛔ A(z) ${t.agentName} agens ${t.provider} csatornaja ${AGENT_MAX_RESTART_ATTEMPTS} automatikus ujrainditas utan sem allt helyre. Tovabb nem indinitom ujra (minden restart elveszi a session kontextusat). Kezi beavatkozas kell: nezd meg a ${t.session} session-t es a ${SERVICE_ID} csatorna-plugint.`)
           agentRestartFailures.set(t.agentName!, failures + 1)
           savePersistedAgentFailures(t.agentName!, failures + 1)
+          // A spell kezdetet atvisszuk: a feladas nem zarja le a kiesest, es egy
+          // kesobbi (kezi vagy magatol jovo) helyreallas MEG mindig meg tudja
+          // mondani, meddig tartott valojaban.
+          carryDownSpellOverRestart(t.session, false)
           agentDownSince.delete(t.session)
           agentBusyDeferAlerted.delete(t.session)
           continue
@@ -1838,6 +2057,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // -> plugin loads + poller attaches). Context is dropped, memory persists.
           startAgentProcess(t.agentName!, { fresh: true })
           agentLastRestart.set(t.agentName!, Date.now())
+          carryDownSpellOverRestart(t.session, true)
+          // MARAD a torles: a restart-dontes msDown-ja ebbol szamol, es egy
+          // frissen ujrainditott agens nem lephetheti at azonnal az
+          // AGENT_DOWN_CONFIRM_MS kaput.
           agentDownSince.delete(t.session)
           agentBusyDeferAlerted.delete(t.session)
           // Count this restart as failed until a later sweep sees the plugin
@@ -1849,6 +2072,16 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
         }
+      }
+    }
+
+    // hu: Megszunt session-ok spell-nyilvantartasanak takaritasa -- kulonben egy
+    // vegleg leallitott agens bejegyzese orokre bent maradna.
+    // en: Drop spell state for sessions that no longer exist.
+    {
+      const liveSessions = new Set(targets.map((t) => t.session))
+      for (const session of agentRecoveringSince.keys()) {
+        if (!liveSessions.has(session)) agentRecoveringSince.delete(session)
       }
     }
 

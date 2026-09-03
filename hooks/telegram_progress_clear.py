@@ -23,8 +23,9 @@ progress state at turn end (no racing Stop hooks):
 
 Loop safety: a per-session `enforce-<sid>.marker` guarantees we block at most
 once; `stop_hook_active` is also honored. Silent on stdout EXCEPT the single
-decision JSON when blocking. Token/state dir resolution mirrors the plugin
-(TELEGRAM_STATE_DIR else default).
+decision JSON when blocking. Token/state dir resolution mirrors the plugin's
+server.ts (STATE_DIR): TELEGRAM_STATE_DIR -> $CLAUDE_CONFIG_DIR/channels/telegram
+-> fixed ~/.claude/channels/telegram.
 """
 import sys, os, json, glob, urllib.request
 
@@ -41,7 +42,8 @@ def state_dir():
     d = os.environ.get("TELEGRAM_STATE_DIR")
     if d:
         return d
-    return os.path.expanduser("~/.claude/channels/telegram")
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.join(config_dir, "channels", "telegram")
 
 
 def log(sd, msg):

@@ -8,6 +8,7 @@ import {
   resolveAgentSession,
   resolveAgentProviderType,
 } from './channel-mcp-reconnect.js'
+import { paneContainsIgnoringWrap } from '../pane-state.js'
 import { getProvider } from '../channel-provider.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 
@@ -68,8 +69,14 @@ function getBackoffMs(attempt: number): number {
   return BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, attempt)
 }
 
+// hu: A pane-illesztes tordeles-tuo -- a Claude Code TUI keskeny pane-en szo
+// kozepen tori a 24 karakteres plugin-azonositot, es a tmux `-J` ezt NEM
+// javitja (merve 2026-09-02, elo pane 80x50: a `-p` es a `-p -J` kimenete
+// jobbra trimmelve bajtazonos). Tordelt azonositoval a halott plugin
+// eszrevetlen maradt, es a helyreallitas el sem indult.
+// en: Wrap-insensitive match; tmux -J does not rejoin TUI-rendered rows.
 function isPluginFailedInPane(pane: string, pluginPaneId: string): boolean {
-  if (!pane.includes(pluginPaneId)) return false
+  if (!paneContainsIgnoringWrap(pane, pluginPaneId)) return false
   return PLUGIN_FAILED_RX.test(pane)
 }
 

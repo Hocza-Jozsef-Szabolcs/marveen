@@ -26,10 +26,11 @@ Exit code:
        (per the skill: fall through to email). Nothing was cleared.
 
 Resolution mirrors the plugin/hooks: state dir from --state-dir else
-TELEGRAM_STATE_DIR else ~/.claude/channels/telegram; token from <state_dir>/.env
-(TELEGRAM_BOT_TOKEN=); session id from --sid else CLAUDE_CODE_SESSION_ID else
-"default". Bot API base from TELEGRAM_API_BASE (default https://api.telegram.org)
-so tests can point it at a local stub.
+TELEGRAM_STATE_DIR else $CLAUDE_CONFIG_DIR/channels/telegram else
+~/.claude/channels/telegram; token from <state_dir>/.env (TELEGRAM_BOT_TOKEN=);
+session id from --sid else CLAUDE_CODE_SESSION_ID else "default". Bot API base
+from TELEGRAM_API_BASE (default https://api.telegram.org) so tests can point it
+at a local stub.
 """
 import sys
 import os
@@ -44,8 +45,13 @@ def api_base():
 
 
 def state_dir(cli_dir=None):
-    return (cli_dir or os.environ.get("TELEGRAM_STATE_DIR")
-            or os.path.expanduser("~/.claude/channels/telegram"))
+    if cli_dir:
+        return cli_dir
+    d = os.environ.get("TELEGRAM_STATE_DIR")
+    if d:
+        return d
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.join(config_dir, "channels", "telegram")
 
 
 def session_id(cli_sid=None):

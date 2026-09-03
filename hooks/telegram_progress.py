@@ -12,9 +12,10 @@ ends. This is the honest alternative to a "typing…" action (which only lasts
 MUST stay silent on stdout — stdout from UserPromptSubmit is injected into the
 model prompt. All diagnostics go to a debug log file under the state dir.
 
-Token/state dir resolution mirrors the telegram plugin: honor TELEGRAM_STATE_DIR
-(set per-agent), else default to ~/.claude/channels/telegram. This keeps the
-hook correct even if installed globally across agents with different bots.
+Token/state dir resolution mirrors the telegram plugin's server.ts (STATE_DIR):
+TELEGRAM_STATE_DIR (set per-agent) -> $CLAUDE_CONFIG_DIR/channels/telegram ->
+fixed ~/.claude/channels/telegram. This keeps the hook correct even if
+installed globally across agents with different CLAUDE_CONFIG_DIR/bots.
 """
 import sys, os, json, re, urllib.request
 
@@ -26,7 +27,8 @@ def state_dir():
     d = os.environ.get("TELEGRAM_STATE_DIR")
     if d:
         return d
-    return os.path.expanduser("~/.claude/channels/telegram")
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.join(config_dir, "channels", "telegram")
 
 
 def log(sd, msg):
