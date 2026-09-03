@@ -72,6 +72,16 @@ CBuildFile="BuildNumberV2.txt"
 # en: SHARED source for the convention switch with build-number-commit-gate.mjs -- see there. One
 #     JSON file read by both sides so they cannot disagree on which repos are release-only bumpers.
 CConventionsPath="${BSZ_CONVENTIONS_PATH:-$CScriptDir/build-number-conventions.json}"
+# hu: ELFOGADOTT-DUPLIKATUM LISTA (kartya dad8f4af): repo-szintu, kartyara hivatkozo lista, amely
+#     egy MAR ATTEKINTETT, veszelytelen build-szam-duplikatumot kivon a FRISS (rc=1) talalatok
+#     kozul -- a lelet TOVABBRA IS KIIRODIK, csak nem allitja meg a hivot. Csak a VISSZATERES es a
+#     KIADAS-DUPLIKATUM detektorra vonatkozik (ezek hordoznak ertek+commit part) -- a CSOKKENES es
+#     a CIM-ELTERES mas hibaosztaly, azokra nincs elfogadas. EGYETLEN forras, csak ez a kapu olvassa
+#     (a build-number-commit-gate.mjs mas kerdest -- a commit-idoben kotelezo leptetest -- dont el).
+# en: ACCEPTED-DUPLICATE LIST: repo-level, card-referencing list that excludes an ALREADY-REVIEWED,
+#     harmless build-number duplicate from FRESH (rc=1) findings -- the finding still PRINTS, it
+#     just does not stop the caller. Applies only to the RETURNING and RELEASE-DUPLICATE detectors.
+CAcceptedDupPath="${BSZ_ACCEPTED_DUP_PATH:-$CScriptDir/build-number-accepted-duplicates.json}"
 # hu: 0 = NINCS MELYSEG-KORLAT (a teljes tortenet). Lasd a fejlec „a melyseg nem szukithet" reszet.
 # en: 0 = NO depth limit (walk the whole history).
 CDefaultLimit=0
@@ -365,7 +375,8 @@ check_worktrees() {
 check_history() {
   local repo="$1" out rc measured
 
-  out=$(BSZ_REPO="$repo" BSZ_FILE="$CBuildFile" BSZ_LIMIT="$FLimit" BSZ_REFERENCE_DATE="$CReferenceDate" python3 - <<'PYEOF'
+  out=$(BSZ_REPO="$repo" BSZ_FILE="$CBuildFile" BSZ_LIMIT="$FLimit" BSZ_REFERENCE_DATE="$CReferenceDate" BSZ_ACCEPTED_DUP_PATH="$CAcceptedDupPath" python3 - <<'PYEOF'
+import json
 import os
 import re
 import subprocess
@@ -487,6 +498,65 @@ def parse_reference(value):
 
 CReferenceEpoch = parse_reference(CReferenceDate) if CReferenceDate else None
 
+# hu: ELFOGADOTT-DUPLIKATUM LISTA (kartya dad8f4af) -- lasd a fejlecben a CAcceptedDupPath
+#     megjegyzeset. Csak a VISSZATERES es a KIADAS-DUPLIKATUM detektor hasznalja: mindketto
+#     (sha, ertek) part hordoz, es a "duplikatum" fogalma pontosan ezt fedi -- egy build-szam
+#     ketszer elo egy azonositon. Olvasatlan/hianyzo/hibas config URES listat ad -- egy torott
+#     fajl NEM SZuKITHETI a kaput (ugyanaz a fail-safe irany, mint a convention_for()-nal).
+# en: ACCEPTED-DUPLICATE LIST -- see CAcceptedDupPath in the header. Used only by the RETURNING
+#     and RELEASE-DUPLICATE detectors, both of which carry (sha, value) pairs. Unreadable/missing/
+#     malformed config yields an empty list -- a broken file cannot narrow the gate.
+CAcceptedDupPath = os.environ.get("BSZ_ACCEPTED_DUP_PATH", "").strip()
+
+
+def load_accepted_duplicates():
+    if not CAcceptedDupPath:
+        return []
+    try:
+        with open(CAcceptedDupPath, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return []
+
+    entries = cfg.get("accepted", [])
+    if not isinstance(entries, list):
+        return []
+
+    repo_norm = CRepo.replace("\\", "/")
+    result = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        pattern = entry.get("repoPathPattern")
+        value = entry.get("buildNumber")
+        shas = entry.get("commits")
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        if not isinstance(value, str) or not value:
+            continue
+        if not isinstance(shas, list) or not shas or not all(isinstance(s, str) and s for s in shas):
+            continue
+        try:
+            matched = re.search(pattern, repo_norm)
+        except re.error:
+            continue
+        if not matched:
+            continue
+        result.append((value, frozenset(shas)))
+    return result
+
+
+CAcceptedDuplicates = load_accepted_duplicates()
+
+
+def accepted(sha, v):
+    """hu: Ez a (commit, ertek) par egy MAR ELFOGADOTT duplikatum-e -- ha igen, kimarad a rc=1
+       dontesbol, de a hivo tovabbra is KIIRJA a sort.
+       en: Whether this (commit, value) pair is an ALREADY-ACCEPTED duplicate -- if so, it is
+       excluded from the rc=1 decision, but the caller still prints the line."""
+    return any(v == av and sha in ashas for av, ashas in CAcceptedDuplicates)
+
+
 commits = []
 for line in git_text("log", "--format=%H|%P|%ct|%s", *CDepthArgs, "HEAD").splitlines():
     if not line.strip():
@@ -508,6 +578,7 @@ def blocks(sha):
 
 
 CPreReferenceNote = "A REFERENCIAPONT ELoTT -- csak jelentve, nem blokkol"
+CAcceptedNote = "ELFOGADOTT duplikatum (kartyan dokumentalva) -- nem blokkol"
 
 
 def annotate(sha, text):
@@ -679,7 +750,9 @@ if returning:
                % (CRepo, branch, " ".join(v for _, v in returning)))
     out.append("     (a szam egy MASIK ertek utan ujra megjelent -- ket kodallapot egy azonositon)")
     out.extend("     (%s: %s)" % (v, CPreReferenceNote) for sha, v in returning if not blocks(sha))
-    hit = hit or any(blocks(sha) for sha, _ in returning)
+    out.extend("     (%s: %s)" % (v, CAcceptedNote)
+               for sha, v in returning if blocks(sha) and accepted(sha, v))
+    hit = hit or any(blocks(sha) and not accepted(sha, v) for sha, v in returning)
 
 if duplicates:
     out.append("  🛑 AZONOS ERTEK KET FAJL-VALTOZASBAN (%s, ag: %s): %s"
@@ -688,7 +761,9 @@ if duplicates:
     out.append("     (a merge, ami mar meglevo szamot HOZ AT, NEM kiadas -- ki van zarva)")
     out.append("     (a [deploy]/[kapu]/[release] kisero-commitok szinten ki vannak zarva)")
     out.extend("     (%s: %s)" % (v, CPreReferenceNote) for sha, v in duplicates if not blocks(sha))
-    hit = hit or any(blocks(sha) for sha, _ in duplicates)
+    out.extend("     (%s: %s)" % (v, CAcceptedNote)
+               for sha, v in duplicates if blocks(sha) and accepted(sha, v))
+    hit = hit or any(blocks(sha) and not accepted(sha, v) for sha, v in duplicates)
 
 if subject_mismatch:
     out.append("  🛑 COMMIT-CIM ELTER A FAJLTOL (%s, ag: %s) -- hamis dokumentacio:" % (CRepo, branch))

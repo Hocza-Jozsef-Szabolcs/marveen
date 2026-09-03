@@ -1124,6 +1124,116 @@ else
   fi
 fi
 
+# ── T25: ELFOGADOTT-DUPLIKATUM LISTA -- MAR ATTEKINTETT LELET NEM BLOKKOL ────
+# 🛑 MERT ESET (kartya dad8f4af): a JokerQ-ban 2026-09-03-an a 987-es build-szamot KET fuggetlen
+#    release-commit adta ki (akka merge-feloldasa 08:07-kor, a #1391/fea51896 08:39-kor). A kapu
+#    ezt FRISS leletkent (rc=1) blokkolja OROKRE, mert a tortenet nem valtoztathato meg -- eddig
+#    NEM volt mechanizmus egy KONKRET, mar attekintett/veszelytelen duplikatum elfogadasara.
+#    A javitas: repo-szintu, kartyara hivatkozo ELFOGADOTT-DUPLIKATUM lista (JSON, ertek +
+#    commit-hash parok), amit a rc=1 dontes ELoTT von ki a FRISS talalatok kozul -- a lelet
+#    TOVABBRA IS KIIRODIK, csak nem allitja meg a hivot.
+echo
+echo "T25 -- ELFOGADOTT-DUPLIKATUM lista (kartya dad8f4af): repo-szintu whitelist kiveszi a rc=1-bol"
+R=$(new_repo t25 100)
+bump "$R" 101 "feat: A ag (build 101)"
+FShaA=$(git -C "$R" rev-parse HEAD)
+gitq "$R" checkout -q -b oldal HEAD~1
+bump "$R" 101 "fix: B ag (build 101)"
+FShaB=$(git -C "$R" rev-parse HEAD)
+gitq "$R" checkout -q main
+gitq "$R" merge -q --no-edit -m "merge: oldal -> main" oldal 2>/dev/null || {
+  echo "101" > "$R/BuildNumberV2.txt"; gitq "$R" add BuildNumberV2.txt
+  gitq "$R" commit -q -m "merge: oldal -> main"
+}
+
+FAcceptedCfg="$FTmp/t25-accepted.json"
+cat > "$FAcceptedCfg" <<JSONEOF
+{"accepted": [{"repoPathPattern": "$(printf '%s' "$R" | sed 's/[\\/&]/\\\\&/g')",
+               "buildNumber": "101",
+               "commits": ["$FShaA", "$FShaB"],
+               "card": "test-t25"}]}
+JSONEOF
+
+# T25a: KONTROLL -- elfogadas nelkul (ismeretlen config-utvonal) a duplikatum PIROS ES blokkol.
+OUT=$(BSZ_ACCEPTED_DUP_PATH="$FTmp/nincs-ilyen-accepted.json" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T25a KONTROLL: elfogadas nelkul a duplikatum PIROS" PIROS "AZONOS ERTEK KET FAJL-VALTOZASBAN" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T25a2 elfogadas nelkul blokkol (RC=1)"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T25a2 RC=$RC, 1 lenne a helyes"; FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T25b: elfogadott config mellett a lelet TOVABBRA IS kiirodik, DE mar nem blokkol.
+OUT=$(BSZ_ACCEPTED_DUP_PATH="$FAcceptedCfg" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T25b elfogadott duplikatummal a lelet TOVABBRA IS kiirodik" PIROS "AZONOS ERTEK KET FAJL-VALTOZASBAN" "$OUT"
+expect "T25b2 a sor ELFOGADOTT-kent van megjelolve" PIROS "ELFOGADOTT duplikatum" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T25b3 elfogadott duplikatum NEM blokkol tobbe (RC=0)"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T25b3 RC=$RC, 0 lenne a helyes -- az elfogadott duplikatum meg mindig blokkol"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T25c: MUTACIO -- az elfogadas-ellenorzes kikapcsolva, a T25b esetenek VISSZA kell blokkolnia.
+FMutantAccept="$FTmp/mutans-elfogadas.sh"
+sed 's/return any(v == av and sha in ashas for av, ashas in CAcceptedDuplicates)/return False/' "$CGate" > "$FMutantAccept"
+if ! grep -q '^    return False$' "$FMutantAccept"; then
+  echo "  ❌ T25c -- a mutacio nem fogott: a kapuban nincs elfogadas-ellenorzo fuggveny"
+  echo "       (a mero a hibas, nem a kapu -- a T25b zoldje IGAZOLATLAN)"
+  FFail=$((FFail + 1))
+else
+  OUT=$(BSZ_ACCEPTED_DUP_PATH="$FAcceptedCfg" bash "$FMutantAccept" --repo "$R" 2>&1); RC=$?
+  if [ "$RC" -eq 1 ]; then
+    echo "  ✅ T25c mutans: elfogadas nelkul a duplikatum UJRA blokkol (RC=1)"; FPass=$((FPass + 1))
+  else
+    echo "  ❌ T25c mutansnal RC=$RC, 1 lenne a vart -- a mutacio nem hozta vissza a leletet"
+    FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+  fi
+fi
+
+# T25d: UJ, BE NEM JEGYZETT duplikatum UGYANABBAN a repoban -- TOVABBRA IS blokkol, az elfogadott
+#       config nem tagitja a kaput altalanosan, csak a konkretan felsorolt (ertek, commit) parra.
+gitq "$R" checkout -q main
+bump "$R" 102 "feat: lepteti (build 102)"
+gitq "$R" checkout -q -b oldal2 HEAD~1
+bump "$R" 102 "fix: masik ag is 102-t ad (build 102)"
+gitq "$R" checkout -q main
+gitq "$R" merge -q --no-edit -m "merge: oldal2 -> main" oldal2 2>/dev/null || {
+  echo "102" > "$R/BuildNumberV2.txt"; gitq "$R" add BuildNumberV2.txt
+  gitq "$R" commit -q -m "merge: oldal2 -> main"
+}
+OUT=$(BSZ_ACCEPTED_DUP_PATH="$FAcceptedCfg" bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T25d az uj, be nem jegyzett 102-es duplikatum PIROS" PIROS "AZONOS ERTEK KET FAJL-VALTOZASBAN" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T25d2 az uj duplikatum TOVABBRA IS blokkol (RC=1) -- a whitelist nem tagul altalanosan"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T25d2 RC=$RC, 1 lenne a helyes -- egy be nem jegyzett duplikatum is athaladt a kapun"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# ── T26: VALOS ESET -- a JokerQ 987-es duplikatuma a PRODUKCIOS configgal ────
+# hu: A PRODUKCIOS build-number-accepted-duplicates.json (nincs BSZ_ACCEPTED_DUP_PATH override)
+#     tartalmazza a 987-es bejegyzest -- a valos repon a 987 sor TOVABBRA IS kiirodik, DE
+#     ELFOGADOTT-kent, nem blokkolokent. Ez a git-tortenet FAGYOTT (mar commitolt) resze, tehat
+#     ez az ellenorzes stabil marad a JokerQ jovobeli, ezzel nem osszefuggo commitjaitol fuggetlenul.
+echo
+echo "T26 -- valos eset: a JokerQ 987-es duplikatuma a PRODUKCIOS elfogadott-lista configgal"
+CRealJokerQ="$HOME/Source/github.com/QCassa.com/JokerQ"
+if [ -d "$CRealJokerQ/.git" ]; then
+  OUT=$(bash "$CGate" --repo "$CRealJokerQ" --limit 800 2>&1)
+  LINE=$(echo "$OUT" | grep "987: ELFOGADOTT duplikatum")
+  if [ -n "$LINE" ]; then
+    echo "  ✅ T26a a valos 987-es duplikatum ELFOGADOTT-kent kiirva, nem blokkol"; FPass=$((FPass + 1))
+  else
+    echo "  ❌ T26a a valos 987-es duplikatum NEM az elfogadott-lista szerint jelenik meg"
+    FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+  fi
+else
+  echo "  ⚠️  T26 KIHAGYVA -- a JokerQ repo nincs a helyen: $CRealJokerQ"
+  echo "     (ez NEM zold: a valos eset merese elmaradt)"
+fi
+
 # ── Osszegzes ─────────────────────────────────────────────────────────────────
 echo
 echo "EREDMENY: $FPass rendben | $FFail elter"

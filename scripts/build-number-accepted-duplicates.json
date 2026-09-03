@@ -1,0 +1,16 @@
+{
+  "_hu": "Repo-szinten ELFOGADOTT build-szam-duplikatumok: mar attekintett, veszelytelen esetek, amelyeket a buildszam-utkozes-kapu.sh kizar a rc=1 dontesbol -- a lelet TOVABBRA IS KIIRODIK (lathato marad), csak nem allitja meg a hivot (pl. wt.sh done). Csak a VISSZATERES es a KIADAS-DUPLIKATUM detektorra vonatkozik (ezek hordoznak ertek+commit part) -- a CSOKKENES es a CIM-ELTERES mas hibaosztaly, azokra nincs elfogadas. Minden bejegyzes kartyara hivatkozik, hogy a dontes visszakovetheto legyen. EGYETLEN forras: kizarolag a buildszam-utkozes-kapu.sh olvassa (a build-number-commit-gate.mjs mas kerdest -- a commit-idoben kotelezo leptetest -- dont el, ide nem tartozik).",
+  "_en": "Repo-level ACCEPTED build-number duplicates: already-reviewed, harmless cases that buildszam-utkozes-kapu.sh excludes from the rc=1 decision -- the finding still PRINTS, it just does not stop the caller (e.g. wt.sh done). Applies only to the RETURNING and RELEASE-DUPLICATE detectors. Every entry references a card so the decision stays traceable. SINGLE source: read only by buildszam-utkozes-kapu.sh.",
+  "accepted": [
+    {
+      "repoPathPattern": "QCassa\\.com/JokerQ$",
+      "buildNumber": "987",
+      "commits": [
+        "ff192c151adf493c135af2c3897cc2cd16096485",
+        "70f62d656bc48cf029a6acddeeac7c1a3510a3a8"
+      ],
+      "card": "dad8f4af",
+      "note": "akka merge-konfliktus-feloldasa (2026-09-03 08:07, ff192c1) es a #1391/fea51896 (2026-09-03 08:39, 70f62d6) fuggetlenul, egymastol nem tudva adta ki mindketto a 987-et. A tenyleges APK a fea51896-bol (70f62d6) keszult -- akka sajat 987-es allapotabol (ff192c1) binaris nem keszult, kockazat nelkul."
+    }
+  ]
+}
