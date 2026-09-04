@@ -940,7 +940,7 @@ export function shSingleQuote(value: string): string {
  * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function
  * (no I/O) -- the caller supplies secrets via `secretLookup` so this is testable without a vault.
  */
-export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
+export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama' | 'zai'
 
 export function resolveProviderEnv(
   model: string,
@@ -959,10 +959,13 @@ export function resolveProviderEnv(
   const isClaude = lower.startsWith('claude-')
   const isDeepseek = lower.startsWith('deepseek-')
   const isMinimax = lower.startsWith('minimax-')
+  // Z.ai GLM Coding Plan ids are `glm-*` (docs.z.ai/devpack/latest-model):
+  // glm-5.3, glm-5.3-flash, with an optional [1m] context suffix.
+  const isZai = lower.startsWith('glm-')
   // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
   // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
-  const isOpenRouter = !isClaude && !isDeepseek && !isMinimax && model.includes('/')
-  const isOllama = !isClaude && !isDeepseek && !isMinimax && !isOpenRouter
+  const isOpenRouter = !isClaude && !isDeepseek && !isMinimax && !isZai && model.includes('/')
+  const isOllama = !isClaude && !isDeepseek && !isMinimax && !isZai && !isOpenRouter
 
   if (isDeepseek) {
     const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
@@ -983,6 +986,16 @@ export function resolveProviderEnv(
     return {
       provider: 'minimax',
       exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
+    }
+  }
+  if (isZai) {
+    // Z.ai GLM Coding Plan -- official Anthropic-compatible endpoint
+    // (docs.z.ai/devpack/tool/claude). Key is vault-gated (ZAI_API_KEY), same
+    // read-at-launch pattern as DeepSeek/MiniMax.
+    const key = secretLookup('ZAI_API_KEY') ?? ''
+    return {
+      provider: 'zai',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isOpenRouter) {
