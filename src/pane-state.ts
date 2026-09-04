@@ -835,17 +835,31 @@ export function detectPermissionMode(pane: string): string | null {
 // EVERY idle-mode footer variant (bypass permissions / accept edits /
 // plan mode / auto mode / manual mode) shares one prefix that survives
 // truncation down to a handful of columns: the spinner-mode glyph
-// (⏵⏵ / ⏵ / ⏸) immediately followed by the first mode word. Scoped to the
-// pane's ACTUAL LAST LINE only -- the live footer is always the last
-// rendered row (same discipline as detectsThinkingBlockError's
-// bottom-up footer search), so this can never match a footer phrase
-// quoted in scrollback above it. Gated on the pane's rendered column
-// WIDTH being narrow (read off the box separator -- the same
-// `'─'.repeat(width)` tmux itself renders): at normal width the full
-// IDLE_FOOTER_RX anchor already renders intact, so this fallback only
-// ever fires on a genuinely truncated render, never a wide healthy pane.
+// (⏵⏵ / ⏵ / ⏸) immediately followed by the first mode word. Searched
+// BOTTOM-UP across the last NARROW_FOOTER_TAIL_LINES rows, not on the
+// last row alone: the footer is NOT always the pane's last rendered row.
+// Claude Code renders the running background-task list BELOW it -- a
+// `⏺ main` row plus one `◯ <task> <elapsed>` row per live task -- so a
+// last-line-only check silently misses every narrow pane that has
+// background work in flight (measured 2026-09-04 on `marveen-channels`:
+// four scheduled tasks starved for ~70 minutes at 339/279/251/199 retries
+// with an EMPTY input box, released within 2.5 minutes of widening the
+// window). Bottom-up keeps the scrollback discipline: the live footer is
+// the LOWEST ⏵/⏸ row, so a footer phrase quoted higher in scrollback can
+// never win. Gated on the pane's rendered column WIDTH being narrow (read
+// off the box separator -- the same `'─'.repeat(width)` tmux itself
+// renders): at normal width the full IDLE_FOOTER_RX anchor already renders
+// intact, so this fallback only ever fires on a genuinely truncated
+// render, never a wide healthy pane.
 const NARROW_PANE_WIDTH_THRESHOLD = 60
 const NARROW_FOOTER_GLYPH_RX = /^\s*[⏵⏸]+\s*\S/
+// How far up from the pane's bottom the narrow-pane fallback looks for the
+// footer glyph. Sized to clear the background-task list that renders below
+// the footer (one `⏺ main` header plus one row per live task) with room to
+// spare, while staying inside the live bottom region -- the same order of
+// magnitude as BUSY_LIVE_REGION_LINES, for the same reason: anything
+// further up is scrollback, not the live surface.
+const NARROW_FOOTER_TAIL_LINES = 12
 
 // The pane's rendered column count, read off the most recent (bottom-most)
 // BOX_SEP_RX separator line -- tmux renders that separator as exactly
@@ -866,8 +880,10 @@ function idleFooterLineIndex(paneLines: string[]): number {
   if (wideIdx >= 0) return wideIdx
   const width = paneColumnWidth(paneLines)
   if (width != null && width < NARROW_PANE_WIDTH_THRESHOLD) {
-    const lastIdx = paneLines.length - 1
-    if (NARROW_FOOTER_GLYPH_RX.test(paneLines[lastIdx])) return lastIdx
+    const from = Math.max(0, paneLines.length - NARROW_FOOTER_TAIL_LINES)
+    for (let i = paneLines.length - 1; i >= from; i--) {
+      if (NARROW_FOOTER_GLYPH_RX.test(paneLines[i])) return i
+    }
   }
   return -1
 }

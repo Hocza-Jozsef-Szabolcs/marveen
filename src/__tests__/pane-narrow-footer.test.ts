@@ -95,3 +95,75 @@ describe('narrow pane truncates the footer before IDLE_FOOTER_RX\'s anchor rende
     expect(isReadyForPrompt(narrow)).toBe(true)
   })
 })
+
+// RED test for the follow-up gap measured 2026-09-04 03:0x on the MAIN
+// `marveen-channels` pane (%1365), narrowed to 23 columns by the
+// `@dontes-audit` teammate's split pane -- the same narrowing class as
+// `panefooterszelesseg` above, but the narrow-pane fallback introduced for
+// that card does NOT catch it.
+//
+// Why the fallback misses: idleFooterLineIndex (src/pane-state.ts) only
+// inspects the pane's LAST line. Claude Code renders the running
+// background-task list BELOW the footer -- a `⏺ main` row plus one
+// `◯ <task> <elapsed>` row per live task -- so on a pane with background
+// work the footer is no longer the last line and the ⏵⏵ glyph anchor is
+// never reached.
+//
+// Measured consequence: four scheduled tasks starved while the `❯` input
+// box was EMPTY on both panes (i.e. not parked input, so no C-u recovery
+// applies): fej-kapacitas-figyelo 339 attempts, kvota-deepseek-valto 279,
+// dream-engine 251, munka-motor 199 -- all with last_reason='busy' in
+// pending_task_retries. Widening the tmux window to 200 columns released
+// all four within 2.5 minutes, which confirms column width was the sole
+// cause.
+const MARVEEN_NARROW_WITH_TASK_LIST = [
+  '⏺ Nincs várakozó',
+  '  üzenet.',
+  '',
+  '─'.repeat(23),
+  '❯ ',
+  '─'.repeat(23),
+  '  Marveen · Sonnet 5…',
+  '  ⏵⏵ bypass       · …',
+  '',
+  '  ⏺ main',
+  '  ◯ dontes-audit 1h 34m',
+].join('\n')
+
+describe('narrow pane whose footer is not the last line (background-task list below)', () => {
+  it('reproduces the measured shape: narrow, no wide anchor, footer above the task list', () => {
+    // The pane is genuinely narrow (23 columns, read off the box separator).
+    expect(MARVEEN_NARROW_WITH_TASK_LIST).not.toMatch(/on \(shift\+tab to cycle\)/)
+    expect(MARVEEN_NARROW_WITH_TASK_LIST).not.toMatch(/← for agents/)
+    // The ⏵⏵ footer glyph IS present -- just not on the last line.
+    expect(MARVEEN_NARROW_WITH_TASK_LIST).toMatch(/^ {2}⏵⏵ /m)
+    const lines = MARVEEN_NARROW_WITH_TASK_LIST.split('\n')
+    expect(lines[lines.length - 1]).not.toMatch(/⏵/)
+  })
+
+  it('RED: must read idle -- an empty input box is idle regardless of what renders below the footer', () => {
+    expect(detectPaneState(MARVEEN_NARROW_WITH_TASK_LIST)).toBe('idle')
+    expect(isReadyForPrompt(MARVEEN_NARROW_WITH_TASK_LIST)).toBe(true)
+  })
+
+  it.each([1, 2, 5])(
+    'RED: stays ready with %i background task rows rendered below the footer',
+    (taskCount) => {
+      const tasks = Array.from(
+        { length: taskCount },
+        (_, i) => `  ◯ task-${i} ${i + 1}h 0${i}m`,
+      )
+      const pane = [
+        '─'.repeat(23),
+        '❯ ',
+        '─'.repeat(23),
+        '  Marveen · Sonnet 5…',
+        '  ⏵⏵ bypass       · …',
+        '',
+        '  ⏺ main',
+        ...tasks,
+      ].join('\n')
+      expect(isReadyForPrompt(pane)).toBe(true)
+    },
+  )
+})
