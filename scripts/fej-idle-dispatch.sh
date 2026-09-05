@@ -260,7 +260,16 @@ for fej in $idle; do
   fallback=0
   if [ -z "$cards" ]; then
     fallback=1
-    cards=$(sqlite3 "$DB" "select id from kanban_cards where (assignee is null or assignee='marveen') and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+    # 🛑 MARVEEN SAJAT KOORDINACIOS KARTYAJA KIZARVA (kartya 11ce879a) -- ket eltero jelleg
+    #    keveredik a status='planned', assignee='marveen' halmazban: (a) valoban delegalatlan,
+    #    barki altal elveheto kartya (ld. T16/c928b7c7), es (b) marveen SAJAT, nem-delegalando
+    #    koordinacios/elemzo feladata, amit csak a `status` mezo alapjan a fallback
+    #    megkulonboztethetetlennek lat a delegalatlantol. Mert eset (c5636788, 2026-09-03): egy
+    #    ilyen sajat kartyat delphi kapott, vissza kellett venni. A `MARVEEN-SAJAT-KOORDINACIOS-
+    #    KARTYA` jelzo a LEIRASBAN zarja ki a kartyat a fallback-halmazbol -- KIZAROLAG az
+    #    assignee='marveen' agra vonatkozik, a valoban delegalatlan (assignee NULL) kartyakra nem,
+    #    meg akkor sem, ha a leirasuk veletlenul ugyanezt a szoveget tartalmazza.
+    cards=$(sqlite3 "$DB" "select id from kanban_cards where (assignee is null or (assignee='marveen' and (description is null or description not like '%MARVEEN-SAJAT-KOORDINACIOS-KARTYA%'))) and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
   fi
   if [ -z "$cards" ]; then
     echo "TETLEN: $fej -- nincs sajat nevre, delegalatlan vagy marveen-nevu planned kartyaja"

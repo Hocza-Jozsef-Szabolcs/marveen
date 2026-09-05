@@ -914,6 +914,68 @@ else
 fi
 
 echo
+
+# ── T53-T56: MARVEEN SAJAT KOORDINACIOS KARTYAJA a fallback-agon (11ce879a) ─────────────────
+# Elo eset (c5636788, 2026-09-03): marveen szandekosan sajat maganak hozott letre egy
+# assignee=marveen, status=planned koordinacios/elemzo kartyat (tobb fej munkajanak atnezese).
+# A fallback-ag (assignee is null or assignee='marveen', status='planned') ezt megkulonbozteth-
+# etetlennek latta egy egyszeruen gazdatlan kartyatol, es delphi-nek osztotta ki -- vissza kellett
+# venni. A jelzo (a leirasban) KIZAROLAG az assignee='marveen' agra vonatkozik -- a valoban
+# delegalatlan (assignee NULL) kartyakat nem erinti, meg akkor sem, ha a leirasuk veletlenul
+# ugyanazt a szoveget tartalmazza.
+echo "── T53: marveen SAJAT koordinacios kartyaja (jelzovel) -> egyetlen tetlen fejnek sem oszthato ki ──"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-marveen-koord planned marveen normal 0 "Regressziomintazat elemzese, tobb fej munkajanak atnezese. MARVEEN-SAJAT-KOORDINACIOS-KARTYA"
+rc=$(run_script)
+check "T53 a koordinacios kartyat delphi NEM probalta"   "0" "$(hivas_szam 'KIOSZTAS: K-marveen-koord delphi')"
+check "T53 a koordinacios kartyat design NEM probalta"   "0" "$(hivas_szam 'KIOSZTAS: K-marveen-koord design')"
+check "T53 a koordinacios kartyat ereceipt NEM probalta" "0" "$(hivas_szam 'KIOSZTAS: K-marveen-koord ereceipt')"
+check "T53 kilepesi kod 0"                                "0" "$rc"
+
+echo "── T54: marveen-nevu planned kartya JELZO NELKUL -> tovabbra is kioszthato (nincs regresszio) ──"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-marveen-sima planned marveen normal 0 "Sima, delegalatlannak szant feladat, jelzo nelkul."
+rc=$(run_script)
+check "T54 a kartyat valamelyik tetlen fej kiosztotta" "1" \
+  "$(( $(hivas_szam 'KIOSZTAS: K-marveen-sima delphi') + $(hivas_szam 'KIOSZTAS: K-marveen-sima design') + $(hivas_szam 'KIOSZTAS: K-marveen-sima ereceipt') ))"
+check "T54 kilepesi kod 0" "0" "$rc"
+
+echo "── T55: delegalatlan (NULL assignee) kartya a jelzovel -> a szures NEM vonatkozik ra ──"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delegalatlan-koord planned "" normal 0 "MARVEEN-SAJAT-KOORDINACIOS-KARTYA -- veletlen egyezes, nem marveen tulajdona."
+rc=$(run_script)
+check "T55 a kartyat valamelyik tetlen fej kiosztotta" "1" \
+  "$(( $(hivas_szam 'KIOSZTAS: K-delegalatlan-koord delphi') + $(hivas_szam 'KIOSZTAS: K-delegalatlan-koord design') + $(hivas_szam 'KIOSZTAS: K-delegalatlan-koord ereceipt') ))"
+check "T55 kilepesi kod 0" "0" "$rc"
+
+echo "── T56 (MUTACIO): a koordinacios-jelzo szures kivetele -> a T53 BUKJON vissza ──"
+CMutans53="$FTmp/fej-idle-dispatch-mutans53.sh"
+python3 - "$CScript" "$CMutans53" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+old = "(assignee is null or (assignee='marveen' and (description is null or description not like '%MARVEEN-SAJAT-KOORDINACIOS-KARTYA%')))"
+new = "(assignee is null or assignee='marveen')"
+if old in text:
+    open(dst, 'w', encoding='utf-8').write(text.replace(old, new, 1))
+PYEOF
+if [ ! -s "$CMutans53" ] || cmp -s "$CScript" "$CMutans53" 2>/dev/null; then
+  echo "  ⚠️  T56 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+  seed_card K-marveen-koord planned marveen normal 0 "Regressziomintazat elemzese, tobb fej munkajanak atnezese. MARVEEN-SAJAT-KOORDINACIOS-KARTYA"
+  cp "$CMutans53" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T56 mutansnal a koordinacios kartya IS kiosztva (a T53 visszajon)" "1" \
+    "$(( $(hivas_szam 'KIOSZTAS: K-marveen-koord delphi') + $(hivas_szam 'KIOSZTAS: K-marveen-koord design') + $(hivas_szam 'KIOSZTAS: K-marveen-koord ereceipt') ))"
+fi
+
+echo
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo "  ✅ $FPass  ❌ $FFail"
 [ "$FFail" -eq 0 ] || exit 1
