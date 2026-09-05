@@ -521,10 +521,13 @@ fi
 echo
 echo "T7 -- valos eset: QuantumAE tortenete"
 if [ -d "$CRealRepo/.git" ]; then
-  # hu: A `--limit` a TELJES commit-lancra ertendo (nem a fajlt erinto commitokra), ezert a
-  #     670..686 sav csak melyebb ablakbol lathato. Ha ezt 400-ra vennenk, a teszt NULLA leletet
-  #     merne, es az ugy nezne ki, mint a tiszta tortenet.
-  OUT=$(bash "$CGate" --repo "$CRealRepo" --limit 800 2>&1)
+  # hu: KARTYA f596db18: a `--limit` egy ROGZITETT szammal (800) SEKELYEBB bejarast jelent, nem
+  #     melyebbet -- a QuantumAE tortenete no, a 670..686 sav egyre MELYEBBRE kerul, es egy fix
+  #     ablak elobb-utobb magatol kiereszti (merve: 1804 commitnal a --limit 800 mar NULLA
+  #     fajl-valtozas-leletet ad). A kapu SAJAT alapertelmezese pont erre a helyzetre val: parameter
+  #     nelkul TELJES tortenetet jar be (`CDefaultLimit=0`), nincs ablak, amibol a sav kieshetne --
+  #     ezert a valos-eset teszt IS limit nelkul hivja a kaput.
+  OUT=$(bash "$CGate" --repo "$CRealRepo" 2>&1)
   LINE=$(echo "$OUT" | grep "AZONOS ERTEK KET FAJL-VALTOZASBAN" | head -1)
   if [ -z "$LINE" ]; then
     echo "  ❌ T7 -- egyetlen fajl-valtozas leletet sem adott; a 670..686 PIROS kellene legyen"
@@ -543,11 +546,29 @@ if [ -d "$CRealRepo/.git" ]; then
     else
       echo "  ✅ T7b a 736 NINCS a listaban (merge, nem kiadas)"; FPass=$((FPass + 1))
     fi
-    if [ "$N" -eq 17 ]; then
-      echo "  ✅ T7c a darabszam 17"; FPass=$((FPass + 1))
+    # hu: 21 -- MERVE (2026-09-05, `buildszam-utkozes-kapu.sh --repo QuantumAE`, limit nelkul,
+    #     ket egymast koveto futason egyezoen). A TELJES tortenetben talalhato OSSZES
+    #     fajl-valtozas-duplikatum, nem csak a 670..686 sav (17 db) -- limit nelkul tobb regi,
+    #     korabban ablakon kivul eso par (496, 1068, 1094, 1095) is lathato lesz.
+    if [ "$N" -eq 21 ]; then
+      echo "  ✅ T7c a darabszam 21"; FPass=$((FPass + 1))
     else
-      echo "  ❌ T7c a darabszam $N, de 17 lenne a helyes"; FFail=$((FFail + 1))
+      echo "  ❌ T7c a darabszam $N, de 21 lenne a helyes"; FFail=$((FFail + 1))
     fi
+  fi
+
+  # hu: T7d KONTROLL (kartya f596db18) -- BUKAS-ELoALLITAS: egy szandekosan SEKELY ablak (--limit
+  #     200) MA is misszeli a 670..686 savot. Ez bizonyitja, hogy a T7a lelete valoban az ABLAK
+  #     MELYSEGEToL fugg (nem valami mas, veletlen okbol PIROS) -- es hogy a fix (limit nelkuli
+  #     hivas) valoban szukseges, nem csak kozmetikai. Ha ez a KONTROLL PIROSRA valna (a sekely
+  #     ablak IS latna a savot), a T7a bizonyitoereje gyenge lenne.
+  OUT_SEKELY=$(bash "$CGate" --repo "$CRealRepo" --limit 200 2>&1)
+  if echo "$OUT_SEKELY" | grep -q "AZONOS ERTEK KET FAJL-VALTOZASBAN"; then
+    echo "  ❌ T7d KONTROLL -- a sekely ablak (200) IS latja a leletet; a T7a bizonyitoereje gyenge"
+    FFail=$((FFail + 1))
+  else
+    echo "  ✅ T7d KONTROLL -- sekely ablakkal (200) a lelet ELTuNIK: a limit nelkuli fix valoban szukseges"
+    FPass=$((FPass + 1))
   fi
 else
   echo "  ⚠️  T7 KIHAGYVA -- a QuantumAE repo nincs a helyen: $CRealRepo"
