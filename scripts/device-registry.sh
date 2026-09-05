@@ -22,6 +22,17 @@
 #                  ellenorzesre, ahol nincs telepitesi szandek) -- ez a hivo szandekat jelzi:
 #                  ha TELEPITENI akarsz, ezt add meg, es ha nincs `--apk`, a kapu HASZNALATI
 #                  HIBAVAL all meg meres elott, nem MEHET-tel.
+#
+# 🛑 KOCKAZAT-JELZES-KAPU (`--repo` melle automatikus, nem kapcsolhato ki): a `check` a
+#    telepitendo build kartya-hivatkozasait a git-tortenetbol olvassa -- minden `--repo`
+#    adott `--branch`-anak commitjaibol, 2026-09-05 ota, a kotelezo "Kartya: #<seq> <id>"
+#    sor alapjan (a hivo NEM ad meg kartyat kezzel; a kod donti el, mit visz ki). Ha egy
+#    ilyen kartyan van egy "KOCKAZAT:"-tal kezdodo komment, amit UGYANAZON a kartyan nem
+#    kovet kesobbi "KOCKAZAT-LEZARVA:"-val kezdodo komment, a `check` ALLJ MEG-et ad --
+#    fuggetlenul minden mas kikotestol. Lezarashoz: irj egy "KOCKAZAT-LEZARVA: ..." kezdetu
+#    kommentet UGYANARRA a kartyara. 2026-09-05 ELoTTI commitok nem esnek a kapu ala
+#    (visszamenoleges blokkolas tilos -- a mechanizmus bevezetese elott irt figyelmeztetesek
+#    nem "KOCKAZAT:" alakuak, es nem is lehettek azok).
 #   device-registry.sh list                                    -> minden eszkoz, egy sor
 #   device-registry.sh show <id>                               -> teljes bejegyzes
 #   device-registry.sh record <id> <agent> <package> <build>   -> telepites rogzitese (UTANA)
@@ -141,9 +152,30 @@ PY
     GATE_BAD=$?
     REPO_STATE=$([ "$GATE_BAD" -eq 0 ] && echo ok || echo blocked)
 
+    # hu: KOCKAZAT-JELZES-KAPU (kartya telepitesi-kapu-megvalaszolatlan-kockazat-jelzes-20260905):
+    #     a telepitendo build kartya-hivatkozasait a git-tortenetbol olvassa (nem a hivotol kert
+    #     --card flagbol), es megall, ha valamelyik hivatkozott kartyan van meg le nem zart
+    #     "KOCKAZAT:" jelzes. CSAK akkor fut, ha van --repo (enelkul mar ugyis "MUNKAFA: NEM MERVE"
+    #     ALLJ MEG all). A --path szukites erre nem vonatkozik: a kockazat-jelzes a COMMITOKROL
+    #     szol, nem a fajl-szintu piszokrol.
+    CARD_RISK_PY="$(cd "$(dirname "$0")" && pwd -P)/device-registry-card-risk-gate.py"
+    KANBAN_DB="${DRCR_KANBAN_DB:-/Users/ceo/Marveen/store/claudeclaw.db}"
+    CARD_RISK_REPORT=""
+    CARD_RISK_BAD=0
+    if [ "$HAS_REPO" -eq 1 ]; then
+      if [ -f "$CARD_RISK_PY" ]; then
+        CARD_RISK_REPORT=$(python3 "$CARD_RISK_PY" "$WANT_BRANCH" "$KANBAN_DB" "${REPOS[@]}")
+        CARD_RISK_BAD=$?
+      else
+        CARD_RISK_REPORT="  KOCKAZAT-ELLENORZES: NEM MERHETo -- hianyzik a mero: $CARD_RISK_PY"
+        CARD_RISK_BAD=2
+      fi
+    fi
+
     python3 - "$REG" "$DEV_ID" "$RESOLVED" \
                      "$REPO_STATE" "$REPO_REPORT" "$GATE_BAD" "$WANT_BRANCH" "$PATHSCOPE" \
-                     "$([ "$HAS_REPO" -eq 1 ] && echo yes || echo no)" <<'PY'
+                     "$([ "$HAS_REPO" -eq 1 ] && echo yes || echo no)" \
+                     "$CARD_RISK_REPORT" "$CARD_RISK_BAD" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1])); q=sys.argv[2].lower()
 resolved=(sys.argv[3] if len(sys.argv)>3 else "").strip()
@@ -216,6 +248,8 @@ gate_bad    = (sys.argv[6] if len(sys.argv) > 6 else "0") == "1"
 want_branch = sys.argv[7] if len(sys.argv) > 7 else "main"
 pathscope   = sys.argv[8] if len(sys.argv) > 8 else "(teljes repo)"
 has_repo    = (sys.argv[9] if len(sys.argv) > 9 else "no") == "yes"
+card_risk_report = sys.argv[10] if len(sys.argv) > 10 else ""
+card_risk_bad    = (sys.argv[11] if len(sys.argv) > 11 else "0") != "0"
 
 if not has_repo:
     # hu: 🛑 A NEM-MERES NEM ELEG KIMONDANI -- A VERDIKTNEK IS KOVETNIE KELL (javitva 2026-08-15).
@@ -248,6 +282,11 @@ else:
         print("           A forditas a LEMEZEN levo allapotbol keszul, nem a commitbol. Commitold vagy")
         print("           stash-eld a kulonbseget -- vagy ha MAS fej munkaja, egyeztess vele --, majd merd ujra.")
     if gate_bad:
+        bad = True
+    for l in card_risk_report.splitlines():
+        if l.strip():
+            print(l)
+    if card_risk_bad:
         bad = True
 
 # hu: ZARO VERDIKT -- EGY sor, ami eldonti a kerdest. Enelkul a kimenetben egymas mellett
