@@ -1227,7 +1227,13 @@ ELAPSED=$(( $(date +%s) - START_TS ))
 if [ "$ELAPSED" -lt 30 ]; then
   echo "WARN: channels session exited after ${ELAPSED}s (likely config error). Check logs." >&2
   echo "$(date '+%Y-%m-%d %H:%M:%S') rapid-exit after ${ELAPSED}s" >> "$INSTALL_DIR/store/channels-failures.log"
-  FAIL_COUNT=$(wc -l < "$INSTALL_DIR/store/channels-failures.log" 2>/dev/null || echo 0)
+  # channels-failures.log is shared with unrelated diagnostics (main-agent
+  # config mode, /mcp unlock probes) written elsewhere in this script -- count
+  # only the rapid-exit lines this branch itself appends, not every line in
+  # the file. (grep -c already prints "0" on no match, so no `|| echo 0`
+  # fallback is chained here -- that pattern double-prints on a no-match exit
+  # status and corrupts the arithmetic below.)
+  FAIL_COUNT=$(grep -c "rapid-exit after" "$INSTALL_DIR/store/channels-failures.log" 2>/dev/null)
   FAIL_COUNT=$((FAIL_COUNT))
   if [ "$FAIL_COUNT" -ge 5 ]; then
     echo "ERROR: ${FAIL_COUNT} rapid failures detected. Waiting 300s before next attempt." >&2
