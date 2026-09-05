@@ -292,14 +292,52 @@ fi
   exit 2
 }
 
-# ── T8: --stats -- a bejart EGYEDI repo-szam egyezzen a fuggetlen find-dedupe szammal ──────────
+# ── T8: --stats -- a bejart EGYEDI repo-szam egyezzen a fuggetlen, KOZOS-git-dir-dedupe szammal ─
+#     🛑 KARTYA-KIEGESZITES (Marveen visszamerese, msg_id:10209): a nyers .git-bejegyzes-szamot
+#     (find | sort -u) a worktree-k tobbszorozik -- egy repo N worktree-vel N-szer szamit. A
+#     fuggetlen mero ezert NEM a nyers path-ot, hanem a KOZOS git-konyvtar (git rev-parse
+#     --git-common-dir, abszolut utra hozva) szerint dedupe-ol -- ugyanazt kell tegye a szkript is.
 echo
-echo "T8 -- --stats: a bejart repo-szam egyezzen a fuggetlen szamlalassal"
+echo "T8 -- --stats: a bejart repo-szam egyezzen a fuggetlen, kozos-git-dir szerinti szamlalassal"
 
-FVart=$(find "$FRoot" -maxdepth 10 -name ".git" \( -type d -o -type f \) 2>/dev/null | sort -u | wc -l | tr -d ' ')
+FVart=$(
+  find "$FRoot" -maxdepth 10 -name ".git" \( -type d -o -type f \) 2>/dev/null | sort -u | while IFS= read -r gd; do
+    r="${gd%/.git}"
+    c=$(cd "$r" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null)
+    [ -n "$c" ] && (cd "$r" && cd "$c" 2>/dev/null && pwd -P)
+  done | sort -u | wc -l | tr -d ' '
+)
 OUT8=$(bash "$CScript" --root "$FRoot" --stats 2>&1)
 
 expect_contains "T8 a --stats a fuggetlenul szamolt repo-szamot adja" IGEN "bejaras: $FVart egyedi repo" "$OUT8"
+
+# ── T10: WORKTREE -- ugyanaz a repo KET munkafaval NEM szamit ketszer a --stats-ban ────────────
+#     🛑 MERT TENY (Marveen elo merese): a nyers .git-bejegyzes-dedupe (T8 REGI alakja) a
+#     worktree-ket tobbszorozta -- egy repo tobb worktree-vel annyiszor szamitott, ahany worktree-je
+#     van. Ez a teszt EZT a hibaosztalyt fedi: KET munkafa, EGY kozos git-adatbazis -- a --stats
+#     szama 1 legyen, NE 2. A FO CIKLUS viszont TOVABBRA IS mindket munkafat KULON vizsgalja
+#     (mindegyiknek sajat checkout-olt aga, sajat "ahead" allapota lehet).
+echo
+echo "T10 -- worktree: egy kozos git-adatbazis ket munkafaval a --stats-ban EGYSZER szamit"
+
+FRoot10="$FTmp/root10"
+mkdir -p "$FRoot10"
+R10=$(new_synced_repo t10-fo "$FRoot10")
+add_unpushed_commit "$R10" "2026-09-01T10:00:00" "fo-agi unpushed"
+
+R10W="$FRoot10/t10-worktree"
+gitq "$R10" worktree add -q -b t10-masik-ag "$R10W"
+
+NYERS10=$(find "$FRoot10" -maxdepth 10 -name ".git" \( -type d -o -type f \) 2>/dev/null | sort -u | wc -l | tr -d ' ')
+[ "$NYERS10" = "2" ] || {
+  echo "  🛑 A MEROESZKOZ VAK: a szintetikus worktree nem 2 nyers .git bejegyzest adott (kapott: $NYERS10)." >&2
+  exit 2
+}
+
+OUT10=$(bash "$CScript" --root "$FRoot10" --stats 2>&1)
+
+expect_contains "T10 a fo-agi repo tovabbra is szerepel a listaban" IGEN "$R10" "$OUT10"
+expect_contains "T10 a --stats a DEDUPE-OLT szamot (1) adja, nem a nyerset (2)" IGEN "bejaras: 1 egyedi repo" "$OUT10"
 
 # ── M4: MUTACIO -- a tavoli-nelkuli-ag felvetel eltavolitasa ───────────────────────────────────
 echo

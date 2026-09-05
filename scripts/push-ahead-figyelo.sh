@@ -57,7 +57,11 @@
 #   --root DIR   Repo-felderites gyokere, tobbszor is adhato (teszthez / szukebb hatokorhoz).
 #                Alapertelmezes: $HOME/Source $HOME/Marveen $HOME/Work.
 #   --stats      Extra sor a vegen: "bejaras: <n> egyedi repo" -- pozitiv kontroll a bejart
-#                hatokorre, fuggetlenul osszevetheto egy sajat `find ... | sort -u | wc -l` meressel.
+#                hatokorre. Az <n> a KOZOS git-konyvtar (`git rev-parse --git-common-dir`,
+#                abszolut utra hozva) szerint dedupe-olt szam, NEM a nyers .git-bejegyzes-szam --
+#                egy repo TOBB worktree-vel egy kozos git-adatbazist oszt meg, es csak EGYSZER
+#                szamit (a FO CIKLUS ettol fuggetlenul minden worktree-t KULON vizsgal, mert
+#                mindegyiknek sajat checkout-olt aga es "ahead" allapota lehet).
 #
 # EXIT: mindig 0 -- ez meres, nem kapu. A hivo a KIMENETBoL dont (ures kimenet = nincs tennivalo),
 #       nem a kilepesi kodbol.
@@ -81,7 +85,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,54p' "$0"
+      sed -n '2,64p' "$0"
       exit 0
       ;;
     *)
@@ -106,7 +110,17 @@ done < <(
 )
 
 if [ "$FStats" = "1" ]; then
-  echo "bejaras: ${#FGitDirs[@]} egyedi repo"
+  FCommonDirs=()
+  for gitdir in "${FGitDirs[@]}"; do
+    repo="${gitdir%/.git}"
+    common=$(cd "$repo" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null)
+    if [ -n "$common" ]; then
+      abscommon=$(cd "$repo" 2>/dev/null && cd "$common" 2>/dev/null && pwd -P)
+      [ -n "$abscommon" ] && FCommonDirs+=("$abscommon")
+    fi
+  done
+  FUniqueCount=$(printf '%s\n' "${FCommonDirs[@]}" | sort -u | grep -c .)
+  echo "bejaras: $FUniqueCount egyedi repo"
 fi
 
 for gitdir in "${FGitDirs[@]}"; do
