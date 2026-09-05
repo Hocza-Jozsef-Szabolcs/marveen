@@ -70,6 +70,66 @@ fej_domain_illik() {
   return 1
 }
 
+# 🛑 MASODIK SZURO -- NYELVI JEL (kartya 3915d094): a fenti fej_domain_illik() CSAK a projekt-
+#    cimket nezi, de egy projekt TOBB technologiat is fedhet (a JokerQ = Delphi VHR5-resz ES C#
+#    QuantumAE-resz egyutt), es ha a kartya PROJEKT MEZOJE URES, a fenti fuggveny `[ -z "$projekt"
+#    ] && return 0` miatt MINDIG atenged -- fuggetlenul a fejtol. Mert eset (be220cd8,
+#    2026-09-03): egy C# fajlokat (QuantumAE/plugins/QCassa.Plugin.EscPos/*.cs) nevezo,
+#    delegalatlan kartya a delphi fejhez kerult volna, ha nem all meg egy masik ok miatt (Jozsi
+#    kifejezett kiosztas-tilalma) -- a projekt-cimke (JokerQ) MOST MAR (T32) kiszurne, de URES
+#    projekt-cimke mellett a hezag ma is fennall.
+#
+#    A szuro CSAK a KIZAROLAG egy nyelvhez kotott, zart domainu fejekre fut -- a nyitott domainu
+#    (OPEN) fejek szandekosan tobb-projektesek/skill-alapuak, azokra nyelvi tiltas nem indokolt.
+CSHARP_NYELVI_MINTA='\.cs([^a-zA-Z0-9]|$)|\.csproj|QuantumAE'
+DELPHI_NYELVI_MINTA='\.pas([^a-zA-Z0-9]|$)|\.dfm|\.dpr|\.inc([^a-zA-Z0-9]|$)|VHR5'
+
+# hu: igaz, ha a fej deklaralt szakterulete KIZAROLAG VHR/VHR5 -- azaz Delphi-only (delphi,
+#     pascal, rendezo). Nem OPEN es nem deklaralatlan fejre.
+fej_delphi_only() {
+  local fej="$1" engedett p
+  engedett=$(fej_sajat_projektek "$fej")
+  [ -z "$engedett" ] && return 1
+  [ "$engedett" = "OPEN" ] && return 1
+  for p in $engedett; do
+    case "$p" in
+      VHR|VHR5) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# hu: igaz, ha a fej ZART domainu (van deklaracioja, nem OPEN), DE a listaja NEM tartalmaz
+#     VHR/VHR5-ot -- azaz Delphi-tol biztosan fuggetlen szakterulet.
+fej_delphi_mentes_zart() {
+  local fej="$1" engedett p
+  engedett=$(fej_sajat_projektek "$fej")
+  [ -z "$engedett" ] && return 1
+  [ "$engedett" = "OPEN" ] && return 1
+  for p in $engedett; do
+    case "$p" in
+      VHR|VHR5) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# hu: rc=0 ha a kartya LEIRASA nem mond ellent a fej nyelvi szakteruletenek, rc=1 ha ellentmond.
+fej_nyelv_illik() {
+  local fej="$1" leiras="$2"
+  local van_cs=0 van_delphi=0
+  echo "$leiras" | grep -qiE "$CSHARP_NYELVI_MINTA" && van_cs=1
+  echo "$leiras" | grep -qiE "$DELPHI_NYELVI_MINTA" && van_delphi=1
+
+  if fej_delphi_only "$fej"; then
+    [ "$van_cs" = "1" ] && [ "$van_delphi" = "0" ] && return 1
+  elif fej_delphi_mentes_zart "$fej"; then
+    [ "$van_delphi" = "1" ] && [ "$van_cs" = "0" ] && return 1
+  fi
+  return 0
+}
+
 # 🛑 VALASZTAS ELOTT: a fej WAITING kartyai kozott lehet olyan, aminek a blokkoloja MAR NEM
 #    all -- ezt a valasztas (a "cards=" lekerdezes lent) SOHA nem latja, mert csak
 #    status='planned'-ot nez, es a waiting -> planned visszaallitas nincs automatizalva
@@ -159,6 +219,10 @@ for fej in $idle; do
     #    `*)` ag (URES visszateres) mostantol a VALODI hianyt jelenti -- egy jovoben felvett,
     #    ide meg at nem vezetett fejet --, es fej_domain_illik ezt KULON kilepesi kodon (2)
     #    jelzi: a hallgatas TOBBE NEM szamit engedelynek.
+    # A leiras VEGE lezaro-jelzot hordozhat (mar kesz/eldontott munka, a status planned maradt
+    # egy korabbi kanban-adatvesztes/elmaradt statusz-valtas miatt -- 2026-08-24, ot eset egy
+    # oran belul). Ilyenkor NE ossza ki automatikusan: a koordinator ellenorzese kell elotte.
+    leiras=$(sqlite3 "$DB" "select description from kanban_cards where id='$card';")
     if [ "$fallback" = "1" ]; then
       projekt=$(sqlite3 "$DB" "select project from kanban_cards where id='$card';")
       illik_rc=0
@@ -172,11 +236,12 @@ for fej in $idle; do
         hatokor_kihagyva=1
         continue
       fi
+      if ! fej_nyelv_illik "$fej" "$leiras"; then
+        echo "KIHAGYVA: $fej -> $card -- a kartya leirasa a(z) $fej szakteruletevel ELLENTETES nyelvi jelet tartalmaz (a projekt-cimke [$projekt] tobb technologiat is fedhet, vagy ures)"
+        hatokor_kihagyva=1
+        continue
+      fi
     fi
-    # A leiras VEGE lezaro-jelzot hordozhat (mar kesz/eldontott munka, a status planned maradt
-    # egy korabbi kanban-adatvesztes/elmaradt statusz-valtas miatt -- 2026-08-24, ot eset egy
-    # oran belul). Ilyenkor NE ossza ki automatikusan: a koordinator ellenorzese kell elotte.
-    leiras=$(sqlite3 "$DB" "select description from kanban_cards where id='$card';")
     # "MARVEEN DONTESE" ONMAGABAN NINCS a listaban: tul tag (barmilyen koordinatori
     # ELJARAS-donteshez illeszkedik, nem csak lezarashoz -- lasd T10 / vhrkapuhatokor,
     # ahol egy AKTIV feladat kozbulso szakaszcime volt, nem lezaras). A negy korabbi

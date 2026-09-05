@@ -744,6 +744,102 @@ else
 fi
 
 echo
+
+# ── T42-T47: NYELVI JEL alapu masodik szuro, ha a projekt-cimke ures vagy tobb technologiat fed
+#    (3915d094) ────────────────────────────────────────────────────────────────────────────────
+# Elo eset (be220cd8, 2026-09-03): egy JokerQ-projektu, C# fajlokat (QuantumAE/plugins/...)
+# nevezo delegalatlan kartya delphi-hez kerult, amikor a delphi meg nem szerepelt a
+# fej_sajat_projektek()-ben (a `*)` uresen hagyo agara esett). Az azota bevezetett projekt-alapu
+# szures (delphi='VHR VHR5', T32) MAR kiszurne a projekt='JokerQ' esetet -- DE ha a kartya
+# PROJEKT MEZOJE URES marad (a `[ -z "$projekt" ] && return 0` mindig atenged), a hezag MEG MOST
+# IS fennall: egy projekt-cimke NELKULI, de C#/QuantumAE-jelu delegalatlan kartya delphinek
+# (vagy pascal/rendezo-nek) menne. A masodik szuro a LEIRAS fajlutvonalai/nyelvi jelei alapjan
+# dont pontosan erre az esetre.
+FAgentsJsonDelphiSolo='[{"name":"marveen","running":true},{"name":"delphi","running":true},{"name":"rendezo","running":true}]'
+
+echo "── T42: delphi (Delphi-only) NEM kaphat C#/QuantumAE-jelu delegalatlan kartyat, meg URES projekt-cimkevel sem ──"
+setup_case
+printf '%s' "$FAgentsJsonDelphiSolo" > "$FTmp/agents.json"
+seed_card K-nyelvi-cs planned "" normal 0 "TEscPosPrinterPlugin.cs:583 QuantumAE/plugins/QCassa.Plugin.EscPos modositas."
+rc=$(run_script)
+check "T42 a C#-jelu kartyat delphi NEM probalta" "0" "$(hivas_szam 'KIOSZTAS: K-nyelvi-cs delphi')"
+check "T42 kilepesi kod 0"                        "0" "$rc"
+
+echo "── T43: delphi TOVABBRA IS megkapja a Delphi-jelu (.pas/.dfm) delegalatlan kartyat, URES projekt-cimkevel ──"
+setup_case
+printf '%s' "$FAgentsJsonDelphiSolo" > "$FTmp/agents.json"
+seed_card K-nyelvi-pas planned "" normal 0 "DUpgrade.pas modositas, uj mezo a Datamodule1.dfm-ben."
+rc=$(run_script)
+check "T43 a Delphi-jelu kartyat delphi kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-nyelvi-pas delphi')"
+check "T43 kilepesi kod 0"                          "0" "$rc"
+
+echo "── T44 (FORDITVA): backend (nem Delphi-domainu, zart) NEM kaphat .pas/.dfm-jelu delegalatlan kartyat ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+seed_card K-nyelvi-pas2 planned "" normal 0 "DUpgrade.pas modositas, VHR5 tabla-migracio."
+rc=$(run_script)
+check "T44 a Delphi-jelu kartyat backend NEM probalta" "0" "$(hivas_szam 'KIOSZTAS: K-nyelvi-pas2 backend')"
+check "T44 kilepesi kod 0"                             "0" "$rc"
+
+echo "── T45: backend TOVABBRA IS megkapja a semleges (nyelvi jel nelkuli) delegalatlan kartyat ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+seed_card K-nyelvi-semleges planned "" normal 0 "Dashboard API vegpont hibakezelese, teszt hozzaadva."
+rc=$(run_script)
+check "T45 a semleges kartyat backend kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-nyelvi-semleges backend')"
+check "T45 kilepesi kod 0"                        "0" "$rc"
+
+echo "── T46 (MUTACIO): a nyelvi szuro kivetele -> a T42 BUKJON vissza ───────────────"
+CMutans42="$FTmp/fej-idle-dispatch-mutans42.sh"
+python3 - "$CScript" "$CMutans42" <<'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+new = re.sub(
+    r"\n *if ! fej_nyelv_illik.*?\n *fi\n",
+    "\n",
+    text, count=1, flags=re.S,
+)
+if new != text:
+    open(dst, 'w', encoding='utf-8').write(new)
+PYEOF
+if [ ! -s "$CMutans42" ] || cmp -s "$CScript" "$CMutans42" 2>/dev/null; then
+  echo "  ⚠️  T46 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonDelphiSolo" > "$FTmp/agents.json"
+  seed_card K-nyelvi-cs planned "" normal 0 "TEscPosPrinterPlugin.cs:583 QuantumAE/plugins/QCassa.Plugin.EscPos modositas."
+  cp "$CMutans42" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T46 mutansnal a C#-jelu kartya IS kiosztva (a T42 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-nyelvi-cs delphi')"
+fi
+
+echo "── T47 (MUTACIO): a forditott iranyu nyelvi szuro kivetele -> a T44 BUKJON vissza ─"
+CMutans44="$FTmp/fej-idle-dispatch-mutans44.sh"
+python3 - "$CScript" "$CMutans44" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+# Az egesz elif-agat toroljuk (nem csak a belso sort) -- ures if-then blokk szintaktikai hibat
+# adna, ami a TELJES scriptet leallitana parse-idoben, es nem a valodi viselkedest merne.
+old = '  elif fej_delphi_mentes_zart "$fej"; then\n    [ "$van_delphi" = "1" ] && [ "$van_cs" = "0" ] && return 1\n'
+if old in text:
+    open(dst, 'w', encoding='utf-8').write(text.replace(old, '', 1))
+PYEOF
+if [ ! -s "$CMutans44" ] || cmp -s "$CScript" "$CMutans44" 2>/dev/null; then
+  echo "  ⚠️  T47 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+  seed_card K-nyelvi-pas2 planned "" normal 0 "DUpgrade.pas modositas, VHR5 tabla-migracio."
+  cp "$CMutans44" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T47 mutansnal a Delphi-jelu kartya IS kiosztva (a T44 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-nyelvi-pas2 backend')"
+fi
+
+echo
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo "  ✅ $FPass  ❌ $FFail"
 [ "$FFail" -eq 0 ] || exit 1
