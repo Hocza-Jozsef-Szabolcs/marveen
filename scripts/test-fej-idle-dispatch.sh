@@ -74,6 +74,14 @@ CREATE TABLE kanban_comments (
   content TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE agent_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_agent TEXT NOT NULL,
+  to_agent TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL
+);
 SQLEOF
 
   # A kiosztas-mock: naplozza a hivast, es kilepesi kodot ad. A kod forrasa elsobbseggel:
@@ -136,6 +144,15 @@ seed_comment() {
 
 # hu: a futo fejek listaja -- delphi ABECEBEN design es ereceipt ELOTT all, ahogy elesben is.
 FAgentsJson='[{"name":"marveen","running":true},{"name":"delphi","running":true},{"name":"design","running":true},{"name":"ereceipt","running":true},{"name":"rendezo","running":true}]'
+
+# hu: egy inter-agent uzenetet szur be az agent_messages tablaba -- a cel-fej UTOLSO
+#     from_agent=<fej> uzenetet nezi a szkript (created_at DESC). Az idopont alapertelmezetten
+#     a "most", masodpercben eltolhato (negativ = mult).
+seed_message() {
+  local from="$1" content="$2" eltolas_sec="${3:-0}" to="${4:-marveen}"
+  sqlite3 "$FTmp/root/store/claudeclaw.db" \
+    "insert into agent_messages (from_agent,to_agent,content,status,created_at) values ('$from','$to','$content','delivered',$(( $(date +%s) + eltolas_sec )));"
+}
 
 run_script() {
   make_mock_curl
@@ -1175,6 +1192,72 @@ ELFOGADASI FELTETEL: a figyelo NEM jelez friss ablak eseten."
   chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
   rc=$(run_script)
   check "T65 mutansnal VISSZAJON a hamis GYANUS jelzes (a T64 bukik)" "1" "$(grep -c 'GYANUS' "$FTmp/kimenet")"
+fi
+
+echo
+
+# ── T66-T69: a fej HATTERBEN futo/backgroundolt munkaja NE veszjen el friss ablakkal (79480150,
+#    5437. komment) ─────────────────────────────────────────────────────────────────────────────
+# Mert eset (2026-09-05 19:46): a `pascal` a sajat jelentesevel EGYUTT irta, hogy egy hosszu
+# forditast hatterbe tett ("Kozben elinditottam a Release ujraforditast hatterben"), utana ures
+# prompton ult. Az idle-szamitas ezt nem kulonbozteti meg a valodi tetlensegtol -- csak azt nezi,
+# van-e in_progress/testing kartyaja --, es 2 perccel kesobb friss ablakkal kiosztott ra egy uj
+# kartyat, ami megolte a futo forditast. Az egyetlen jel, ami ezt kivulrol jelzi: a fej UTOLSO
+# inter-agent uzenete (agent_messages, from_agent=<fej>).
+echo "── T66: a cel-fej legutolso uzenete KUSZOBNEL FRISSEBB ES hatterbe tett munkat allit -> NINCS kiosztas, csak JELZES ──"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi planned delphi
+seed_message delphi "Kozben elinditottam a Release ujraforditast hatterben." -120
+rc=$(run_script)
+check "T66 a kartyat delphi NEM kapta meg"  "0" "$(hivas_szam 'KIOSZTAS: K-delphi delphi')"
+check "T66 JELZES jelenik meg a kimenetben" "1" "$(grep -c 'JELZES: delphi' "$FTmp/kimenet" || true)"
+check "T66 kilepesi kod 0"                  "0" "$rc"
+
+echo "── T67: ugyanaz az uzenet, de a KUSZOBNEL REGEBBI -> a kiosztas valtozatlanul megtortenik ──"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi planned delphi
+seed_message delphi "Kozben elinditottam a Release ujraforditast hatterben." -3600
+rc=$(run_script)
+check "T67 a kartyat delphi megkapta"  "1" "$(hivas_szam 'KIOSZTAS: K-delphi delphi')"
+check "T67 kilepesi kod 0"             "0" "$rc"
+
+echo "── T68: a cel-fej legutolso uzenete FRISS, de NEM hatterbe tett munkarol szol -> nincs hamis pozitiv ──"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi planned delphi
+seed_message delphi "Kesz a 39e8bfb6 kartya, push-ra var." -30
+rc=$(run_script)
+check "T68 a kartyat delphi megkapta"       "1" "$(hivas_szam 'KIOSZTAS: K-delphi delphi')"
+check "T68 nincs JELZES a kimenetben"       "0" "$(grep -c 'JELZES: delphi' "$FTmp/kimenet" || true)"
+check "T68 kilepesi kod 0"                  "0" "$rc"
+
+echo "── T69 (MUTACIO): a hatterben-futo-munka ellenorzes kivetele -> a T66 BUKJON vissza ──"
+CMutans69="$FTmp/fej-idle-dispatch-mutans69.sh"
+python3 - "$CScript" "$CMutans69" <<'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+new = re.sub(
+    r"\n *if fej_frissen_hatterben_dolgozik \"\$cel_fej\"; then\n.*?\n *fi\n",
+    "\n",
+    text, count=1, flags=re.S,
+)
+if new != text:
+    open(dst, 'w', encoding='utf-8').write(new)
+PYEOF
+if [ ! -s "$CMutans69" ] || cmp -s "$CScript" "$CMutans69" 2>/dev/null; then
+  echo "  ⚠️  T69 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+  seed_card K-delphi planned delphi
+  seed_message delphi "Kozben elinditottam a Release ujraforditast hatterben." -120
+  cp "$CMutans69" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T69 mutansnal a kartyat delphi MEGIS megkapja (a T66 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi delphi')"
 fi
 
 echo

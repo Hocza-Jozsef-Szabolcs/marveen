@@ -243,6 +243,31 @@ fej_olcsobb_szabad_testver() {
   return 1
 }
 
+# 🛑 A KIOSZTAS MEGOLHET EGY HATTERBEN FUTO MUNKAT (kartya 98971e56, mert eset 79480150/5437.
+#    komment, 2026-09-05 19:46): a `pascal` a sajat jelentesevel EGYUTT irta, hogy egy hosszu
+#    forditast hatterbe tett, utana ures prompton ult -- az idle-szamitas (fent, csak az
+#    in_progress/testing kartya letet nezi) ezt NEM kulonbozteti meg a valodi tetlensegtol. Egy
+#    2 perccel kesobbi kiosztas ELVITTE a hatterben futo forditast, es a felbeszakitott build
+#    koztes allapota miatt a KOVETKEZo forditas is bukott -- a hibauzenet a megszakitasrol semmit
+#    nem art el. Az EGYETLEN jel, ami ezt kivulrol jelzi: a fej UTOLSO inter-agent uzenete
+#    (agent_messages, from_agent=<fej>) -- ha az kuszobnel frissebb ES futo/hatterbe tett
+#    munkarol szol, a kiosztas MEG megolne.
+#
+# 🛑 A KUSZOB DONTES, NEM MERT TENY (env-valtozoval felulirhato) -- az alapertelmezes a mert
+#    esethez igazodik: a jelentes es a kiosztas kozott MERT ket perc telt el, a fej-kapacitas-
+#    figyelo utemezese pedig 15 percenkent fut, tehat a kuszobnek legalabb ezt kell fednie.
+KUSZOB_SEC="${FEJ_IDLE_DISPATCH_KUSZOB_SEC:-900}"
+
+fej_frissen_hatterben_dolgozik() {
+  local fej="$1" utolso_ido utolso_uzenet kor
+  utolso_ido=$(sqlite3 "$DB" "select created_at from agent_messages where from_agent='$fej' order by created_at desc, id desc limit 1;")
+  [ -z "$utolso_ido" ] && return 1
+  kor=$(( $(date +%s) - utolso_ido ))
+  [ "$kor" -ge "$KUSZOB_SEC" ] && return 1
+  utolso_uzenet=$(sqlite3 "$DB" "select content from agent_messages where from_agent='$fej' order by created_at desc, id desc limit 1;")
+  echo "$utolso_uzenet" | grep -qiE 'hatt[ée]r(ben|be)|background'
+}
+
 active=$(sqlite3 "$DB" "select assignee from kanban_cards where status in ('in_progress','testing') and archived_at is null and assignee is not null group by assignee;")
 
 idle=$(comm -23 <(echo "$running" | sort -u) <(echo "$active" | sort -u))
@@ -297,6 +322,10 @@ for fej in $idle; do
   fi
   if [ -z "$cards" ]; then
     echo "TETLEN: $fej -- nincs sajat nevre, delegalatlan vagy marveen-nevu planned kartyaja"
+    continue
+  fi
+  if fej_frissen_hatterben_dolgozik "$cel_fej"; then
+    echo "JELZES: $fej -- a cel-fej ($cel_fej) utolso uzenete a kuszobnel (${KUSZOB_SEC}s) frissebb ES futo/hatterbe tett munkat allit -- KIOSZTAS KIHAGYVA, nehogy a friss ablak megolje a hatterben futo munkat"
     continue
   fi
   kiosztva=0
