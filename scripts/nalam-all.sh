@@ -32,10 +32,37 @@
 #     reagalok ra (a sajat kommentem torli a sort a listarol, UGYANUGY mint a
 #     waiting-nel).
 #
+#     🛑 KIBoVITVE BARMELY FEJ NEVEN allo `done` kartyaval is (2026-09-06, MERT ESET:
+#     a `6783a107` kartyat -- assignee=backend -- a backend lezarta reszletes zaro-
+#     kommenttel, inter-agent uzenet NELKUL; a lezaras 52 percig allt eszrevetlenul,
+#     mert ez a szkript CSAK `k.assignee = '$ME'` kartyakat nezett). A fenti minta
+#     (`nalam-all.sh:26-33`) csak akkor fedte ezt, ha a sajat nevemre allt a kartya --
+#     egy FEJ SAJAT neven allo, altala lezart kartyaja szerkezetileg lathatatlan volt.
+#
+#     A KIBoVITES CSAK `marveen` nezopontban aktiv, es HAROM feltetelnek egyszerre
+#     kell teljesulnie ahhoz, hogy egy MAS fej neven allo `done` kartya megjelenjen:
+#       (a) a fej UTOLSO SAJAT kommentje (a "zaro komment") ota nincs marveen-komment
+#       (b) ...es nincs `agent_messages` sor `from_agent=<fej>, to_agent=marveen`
+#           `created_at > zaro komment ideje`-vel -- ha a fej UZENETBEN jelentett,
+#           mar tudok rola, a csendes-lezaras riasztas targytalan (hamis pozitiv elleni ved)
+#       (c) marveen nem kommentelt a zaras ota (ez (a)-val egybeesik: ha kommentelt
+#           volna, o lenne a legutolso szerzo -- de kulon soron all, mert ez a
+#           tenyleges VISELKEDESI feltetel, (a) csak ennek a SQL-meroszama)
+#     Referenciapont a fej UTOLSO SAJAT kommentjenek ideje, NEM `dispatched_at` (az
+#     write-once, csak az ELSo in_progress-be lepeskor all be) es NEM a legutolso
+#     komment a karyan (az lehet MAS fejtol is, azt a (a) mar kulon szuri).
+#
+#     ISMERT MELLEKHATAS: mivel nincs idokorlat, a bovites a TORTENELMI `done`
+#     kartyakra is visszamenolegesen mer -- olyan regi lezarasokra is talalatot ad,
+#     amikre marveen SOHA nem reagalt kommenttel/uzenettel, meg ha az regen rendben
+#     is volt. Ez egyszeri backlogot jelenthet az elso futtataskor, nem hiba.
+#
 # en: WHAT IS WAITING ON ME -- first step of the work-engine round.
 #     Lists `waiting` OR `done` cards where the last comment author is NOT me --
 #     either a decision request left on me (`waiting`), or a card another agent
 #     closed without notifying me (`done`). Empty output means nothing is pending.
+#     Extended (marveen view only) to ANY agent's `done` card with zero marveen
+#     reaction (comment or inter-agent message) since that agent's own last comment.
 
 set -uo pipefail
 
@@ -46,6 +73,48 @@ if [ ! -r "$DB" ]; then
   echo "nalam-all: az adatbazis nem olvashato: $DB" >&2
   exit 2
 fi
+
+# hu: MAS fej neven allo, csendben lezart `done` kartyak -- lasd a fejlec-komment
+#     "KIBoVITVE" szakaszat a harom feltetelert. Csak `marveen` nezopontban aktiv,
+#     ezert kulon fuggveny: a korai-exit agbol ES a normal vegrol is meg kell hivni.
+# en: Other agents' silently-closed `done` cards -- see the "KIBoVITVE" header
+#     section for the three conditions. Active only in the `marveen` view, hence a
+#     separate function callable both from the early-exit branch and the tail.
+idegen_csendes_lezaras() {
+  [ "$ME" = "marveen" ] || return 0
+
+  local idegen
+  idegen=$(sqlite3 -separator '|' "$DB" "
+    WITH lac AS (
+      SELECT k.id AS card_id, k.assignee AS assignee, k.title AS title, k.updated_at AS updated_at,
+             (SELECT MAX(c.created_at) FROM kanban_comments c
+                WHERE c.card_id = k.id AND c.author = k.assignee) AS zaro_ts
+        FROM kanban_cards k
+       WHERE k.status = 'done'
+         AND k.assignee IS NOT NULL
+         AND k.assignee <> 'marveen'
+         AND k.archived_at IS NULL
+    )
+    SELECT card_id, assignee,
+           CAST(ROUND((strftime('%s','now') - updated_at) / 60.0) AS INTEGER) AS perc,
+           substr(title, 1, 60)
+      FROM lac
+     WHERE zaro_ts IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM kanban_comments c2
+                         WHERE c2.card_id = lac.card_id AND c2.author = 'marveen'
+                           AND c2.created_at > lac.zaro_ts)
+       AND NOT EXISTS (SELECT 1 FROM agent_messages m
+                         WHERE m.from_agent = lac.assignee AND m.to_agent = 'marveen'
+                           AND m.created_at > lac.zaro_ts)
+     ORDER BY zaro_ts DESC;")
+
+  if [ -n "$idegen" ]; then
+    echo "nalam-all: MAS FEJEK CSENDBEN LEZART KARTYAI -- egyik sem kapott marveen-reakciot (komment vagy inter-agent uzenet) a fej zaro kommentje ota."
+    printf '%s\n' "$idegen" | while IFS='|' read -r id assignee perc cim; do
+      printf '  %-52s  %-10s  %5s perc  %s\n' "$id" "$assignee" "$perc" "$cim"
+    done
+  fi
+}
 
 rows=$(sqlite3 -separator '|' "$DB" "
   SELECT k.id,
@@ -77,6 +146,7 @@ if [ -z "$rows" ]; then
     echo "  (hatokor: $osszes db 'waiting'/'done' kartya all $ME neven, de MINDEGYIKEN"
     echo "   $ME irt utoljara -- vagyis egyiket sem MAS fej tette le/zarta le csendben)"
   fi
+  idegen_csendes_lezaras
   exit 0
 fi
 
@@ -99,3 +169,4 @@ fi
 printf '%s\n' "$rows" | while IFS='|' read -r id statusz utolso perc cim; do
   printf '  %-52s  %-8s  %-10s  %5s perc  %s\n' "$id" "$statusz" "$utolso" "$perc" "$cim"
 done
+idegen_csendes_lezaras
