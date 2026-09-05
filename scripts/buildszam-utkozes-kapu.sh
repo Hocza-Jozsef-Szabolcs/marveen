@@ -178,17 +178,40 @@ fi
 echo "BUILD-SZAM UTKOZES-KAPU -- hatokor: ${#FRepos[@]} hely, commit-melyseg: $FDepthText"
 echo
 
-# hu: EGY WORKTREE KODALLAPOTANAK UJJLENYOMATA -- A LEMEZRoL, nem a commitbol.
-#     Harom resz, mert egyik sem eleg onmagaban (mindharomra van eloallitott eset a mereseszkozben):
-#       (1) `git diff HEAD`                -- a kovetett fajlok TARTALMA; az UJ fajlokat nem latja
-#       (2) `git status --porcelain -uall` -- nevek es statuszok; az uj fajl JELENLETET fogja,
-#                                             a TARTALMAT nem (ket eltero modositas azonos nevvel
-#                                             ugyanazt a kimenetet adja)
-#       (3) `git hash-object` az uj fajlokra -- az azonos nevu UJ fajl eltero tartalma
-#     KOLTSEG: ~20-40 ms worktree-nkent, ezert a hivo CSAK akkor keri, ha van azonos-szam +
-#     azonos-HEAD par. A tipikus futasban egyetlen extra git-hivas sem tortenik.
-# en: Fingerprints a worktree's code state FROM DISK. Three parts, none sufficient alone; the caller
-#     invokes it only for same-number + same-HEAD pairs, so the typical run pays nothing.
+# hu: EGY WORKTREE KODALLAPOTANAK UJJLENYOMATA -- A LEMEZRoL, de KIZAROLAG a NYOMON KOVETETT
+#     tartalombol: `git rev-parse HEAD` + `git diff HEAD`. A build-szamot hordozo fajl (CBuildFile)
+#     maga is nyomon kovetett, tehat a SAJAT piszkos (uncommitolt) allapota mar a `diff HEAD`-ben
+#     latszik -- nincs ra kulon ag.
+#
+# 🛑 AZ UNTRACKED (`??`) FAJLOK SZANDEKOSAN KIMARADNAK A FINGERPRINTBoL -- MERT ESET (akka,
+#    2026-09-05, #1475 zarasa, kartya aeaa45e5): a QuantumAE-nal a ket munkafa HEAD-je BAJTRA
+#    AZONOS volt (b188c3e6), az EGYETLEN elteres egy IDEGEN, commitolatlan fajl a FO KLONBAN
+#    (docs/nav-level-renewCertificate-T0002-2026-09-05.txt -- egy MASIK, kezi session jegyzete
+#    egy MASIK kartyahoz). A REGI, harom reszes fingerprint ezt "eltero munkafanak" latta, holott
+#    a build-szam mindket helyen azonos, es a jegyzet SOHA nem kerul a fordito ele -- nem ket
+#    kodallapot allt szemben, csak a fo klon (amit tobb fej/session OSZT MEG) hordozott idegen
+#    piszkot. A jelzest a helyesen eljaro fej semmilyen sajat lepese nem oldotta fel -- csak a kapu
+#    MEGKERULESE (WT_BSZ_GATE atirasa a wt.sh-ban), es egy kapu, amit csak megkerulessel lehet
+#    teljesiteni, nem kapu.
+#    A DONTES: a nyomon kovetett tartalom (HEAD + a build-szamot hordozo fajl allapota -- ez a
+#    `diff HEAD`-ben mar benne van) ELEG a build-szam-utkozes kerdesehez. Egy `??` untracked fajl,
+#    ami se a CBuildFile, se nyomon kovetett forras, NEM valtoztatja a KIADOTT build-szamot.
+#    ELFOGADOTT ARA: egy VALODI, meg `git add`-olatlan UJ forrasfajl (amit a fordito a munkafabol
+#    csipne fel) mostantol NEM szamit bele -- a teszt-fajl T14e/T14f/T14h esetei ezert most mar
+#    ZOLDET varnak, nem PIROSAT, ugyanezzel az indoklassal. Ha ez valaha valodi regressziot okoz,
+#    a javitas egy UJ, szukebb (pl. repo-szintu forras-kiterjesztes-lista) szures legyen, NE a
+#    harom-reszes fingerprint visszaallitasa.
+#    KOLTSEG: worktree-nkent egy `rev-parse` + egy `diff HEAD`, a hivo CSAK azonos-szam +
+#    azonos-HEAD parra keri.
+# en: Fingerprints a worktree's code state FROM DISK, but ONLY from TRACKED content: HEAD + `diff
+#     HEAD` (which already covers a dirty build-number file, since that file is itself tracked).
+#     Untracked (`??`) files are DELIBERATELY excluded -- see the measured case above (akka,
+#     2026-09-05, #1475/aeaa45e5): an unrelated untracked note sitting in the shared main clone made
+#     two identical-HEAD, identical-build-number worktrees look like a collision, and the only way
+#     out for the correctly-behaving agent was bypassing the gate. Accepted cost: a genuinely new,
+#     not-yet-`git add`-ed source file no longer counts (T14e/f/h now expect green) -- a narrower,
+#     repo-aware filter is the right follow-up if that ever regresses, not reverting to the
+#     three-part fingerprint.
 FFpCache="|"
 FFp=""
 worktree_fingerprint() {
@@ -221,18 +244,11 @@ worktrees_differ() {
 }
 
 worktree_fingerprint_compute() {
-  local wt="$1" f
+  local wt="$1"
 
   {
     git -C "$wt" rev-parse HEAD 2>/dev/null
     git -C "$wt" diff HEAD 2>/dev/null
-    git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null
-
-    git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null \
-      | sed -n 's/^?? //p' \
-      | while IFS= read -r f; do
-          [ -f "$wt/$f" ] && git -C "$wt" hash-object -- "$f" 2>/dev/null
-        done
   } | shasum 2>/dev/null | cut -d' ' -f1
 }
 
@@ -284,15 +300,18 @@ check_worktrees() {
   #    munkafaval, mind a 113-as szammal -- a szam-alapu osszevetes NEGY "utkozest" jelentett rajta.
   #
   # 🛑 DE A HEAD ONMAGABAN SZuK: AZ ERTEKET A LEMEZRoL OLVASSUK, TEHAT AZ AZONOSSAGNAK IS A LEMEZT
-  #    KELL TUKROZNIE. Ket worktree allhat ugyanazon a commiton ELTERo commitolatlan tartalommal --
-  #    az ket kulonbozo binaris ugyanazzal a build-szammal. A kartya sajat tezise ugyanez:
-  #    *** az APK a MUNKAFABOL fordul, nem a HEAD-boL. ***
-  #    A ket kezenfekvo mechanizmus KULON-KULON mast hagy ki, ezert MINDHAROM resz kell:
-  #      `git diff HEAD`                     -- a kovetett fajlok TARTALMA (uj fajlokat nem lat)
-  #      `git status --porcelain -uall`      -- a nevek/statuszok, az UJ fajlok JELENLETE (tartalmat nem)
-  #      `git hash-object` az uj fajlokra    -- az azonos nevu UJ fajl ELTERo tartalma
-  # en: The value is read from DISK, so identity must reflect the disk too -- HEAD alone is too narrow.
-  #     Each of the three parts covers what the others miss.
+  #    KELL TUKROZNIE. Ket worktree allhat ugyanazon a commiton ELTERo commitolt-ELoTTI
+  #    (nyomon kovetett, de commitolatlan) tartalommal -- az ket kulonbozo binaris ugyanazzal a
+  #    build-szammal. A kartya sajat tezise ugyanez: *** az APK a MUNKAFABOL fordul, nem a
+  #    HEAD-boL. *** DE CSAK A NYOMON KOVETETT tartalom szamit -- lasd worktree_fingerprint_compute()
+  #    fejleceben a #1475/aeaa45e5 mert esetet: egy IDEGEN untracked fajl (nem forras, nem a
+  #    build-szam-fajl) NEM valtoztatja a kiadott build-szamot, tehat nem szamit "eltero
+  #    kodallapotnak":
+  #      `git diff HEAD` -- a kovetett fajlok TARTALMA (a build-szam-fajl SAJAT dirty allapotat is
+  #                         ide ertve)
+  # en: The value is read from DISK, so identity must reflect the disk too -- HEAD alone is too
+  #     narrow. But only TRACKED content counts -- see worktree_fingerprint_compute()'s header for
+  #     the measured case (#1475/aeaa45e5) that excluded untracked files.
   while IFS= read -r line; do
     case "$line" in
       "worktree "*)

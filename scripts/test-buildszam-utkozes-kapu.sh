@@ -334,15 +334,18 @@ expect "T12b eltero kodallapot azonos szammal UTKOZES" PIROS "WORKTREE-UTKOZES" 
 # 🛑 A DETEKTOR KET OLDALANAK KONZISZTENSNEK KELL LENNIE: az ERTEKET a LEMEZRoL olvassuk
 #    (`BuildNumberV2.txt` a munkafabol), tehat az AZONOSSAGOT is a lemeznek kell tukroznie -- nem
 #    eleg a `HEAD` osszevetese. A kartya sajat tezise ugyanez: *** az APK a MUNKAFABOL fordul,
-#    nem a HEAD-boL. *** Ket worktree azonos commiton, de eltero commitolatlan tartalommal KET
-#    KULONBOZo BINARIS ugyanazzal a build-szammal.
+#    nem a HEAD-boL. *** Ket worktree azonos commiton, de eltero NYOMON KOVETETT (tracked, meg
+#    nem commitolt) tartalommal KET KULONBOZo BINARIS ugyanazzal a build-szammal.
 #
-# 🛑 ES A KET KEZENFEKVo MECHANIZMUS KULON-KULON MAST HAGY KI -- ezert meri ez a blokk mind a kettot:
-#      `git status --porcelain`  -> a JELENLETET fogja, a TARTALMAT nem  (T14d bukna rajta)
-#      `git diff HEAD`           -> a TARTALMAT fogja, az UJ fajlokat nem (T14e bukna rajta)
-#      egyik sem fogja az azonos nevu UJ fajl eltero tartalmat            (T14f)
+# 🛑 DE AZ UNTRACKED (`??`) FAJLOK KIMARADNAK -- MERT ESET (akka, 2026-09-05, #1475/aeaa45e5):
+#    egy IDEGEN, forrast nem erinto untracked jegyzet a fo klonban hamis "eltero munkafa"
+#    riasztast adott, holott a build-szam es a HEAD is azonos volt mindket helyen. Ezert T14e,
+#    T14f es T14h -- ahol az EGYETLEN elteres egy untracked fajl -- most ZOLDET var: a
+#    fingerprint kizarolag `git diff HEAD`-et hasznal (a teljes indoklas
+#    worktree_fingerprint_compute() fejleceben). T14a/T14c/T14d TOVABBRA IS PIROS marad, mert
+#    azok NYOMON KOVETETT (kod.txt) tartalom elteresei -- ezt a `diff HEAD` valtozatlanul fogja.
 echo
-echo "T14 -- azonos HEAD, eltero munkafa (a lemez dont)"
+echo "T14 -- azonos HEAD, eltero munkafa (a lemez dont, de csak a nyomon kovetett resze)"
 R=$(new_repo t14 900)
 echo "eredeti tartalom" > "$R/kod.txt"
 gitq "$R" add kod.txt
@@ -355,7 +358,7 @@ FSecond="$FTmp/t14-masodik"
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
 expect "T14-kiindulas: ket tiszta, azonos worktree -> nincs lelet" ZOLD "WORKTREE-UTKOZES" "$OUT"
 
-# (a) AZ ORDOG REPRODUKCIOJA: azonos HEAD, az EGYIK munkafaja piszkos
+# (a) AZ ORDOG REPRODUKCIOJA: azonos HEAD, az EGYIK munkafaja piszkos (NYOMON KOVETETT fajlon)
 echo "MASIK tartalom" > "$FSecond/kod.txt"
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
 expect "T14a azonos HEAD + az egyik PISZKOS -> utkozes" PIROS "WORKTREE-UTKOZES" "$OUT"
@@ -365,46 +368,46 @@ echo "MASIK tartalom" > "$R/kod.txt"
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
 expect "T14c mindketto piszkos, AZONOS tartalommal -> nincs utkozes" ZOLD "WORKTREE-UTKOZES" "$OUT"
 
-# (d) MINDKETTo piszkos, KULONBOZo tartalommal -> a puszta `status` NEM fogna (azonos fajlnev, azonos statusz)
+# (d) MINDKETTo piszkos, KULONBOZo tartalommal -> nyomon kovetett elteres, a `diff HEAD` fogja
 echo "HARMADIK tartalom" > "$R/kod.txt"
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
 expect "T14d mindketto piszkos, ELTERo tartalommal -> utkozes" PIROS "WORKTREE-UTKOZES" "$OUT"
 
-# (e) UJ, nyomon nem kovetett fajl az egyikben -> a `git diff HEAD` NEM fogna
+# (e) UJ, nyomon nem kovetett fajl az egyikben -> KIZAROLAG untracked elteres -> NEM utkozes
+#     (ez PONTOSAN a #1475/aeaa45e5 alakja: egy idegen, forrast nem erinto untracked fajl)
 echo "MASIK tartalom" > "$R/kod.txt"
 echo "uj fajl" > "$R/ujdonsag.txt"
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
-expect "T14e UJ (untracked) fajl az egyikben -> utkozes" PIROS "WORKTREE-UTKOZES" "$OUT"
+expect "T14e UJ (untracked) fajl az egyikben -> KIZAROLAG untracked elteres, nincs utkozes" ZOLD "WORKTREE-UTKOZES" "$OUT"
 
-# (f) AZONOS NEVu uj fajl MINDKETToBEN, ELTERo tartalommal -> sem a `status`, sem a `diff` nem fogja
+# (f) AZONOS NEVu uj fajl MINDKETToBEN, ELTERo tartalommal -> szinten KIZAROLAG untracked elteres
 echo "MASIK tartalom" > "$FSecond/ujdonsag.txt"
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
-expect "T14f azonos nevu UJ fajl ELTERo tartalommal -> utkozes" PIROS "WORKTREE-UTKOZES" "$OUT"
+expect "T14f azonos nevu UJ fajl ELTERo tartalommal -> KIZAROLAG untracked elteres, nincs utkozes" ZOLD "WORKTREE-UTKOZES" "$OUT"
 
 # (g) KONTROLL: az uj fajl MINDKETToBEN azonos tartalommal -> nincs utkozes
 echo "uj fajl" > "$FSecond/ujdonsag.txt"
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
 expect "T14g KONTROLL: azonos uj fajl azonos tartalommal -> nincs utkozes" ZOLD "WORKTREE-UTKOZES" "$OUT"
 
-# (h) AZONOS TARTALMU, de MAS NEVu uj fajl -> a `hash-object`-lista AZONOS, a `status` ELTER.
-#     Ez az EGYETLEN eset, amit a `status --porcelain` resz fog -- nelkule a kapu ZOLDET adna.
-#     (Merve: a harom resz kikapcsolasa kulon-kulon a T14d / (ez) / T14f esetet buktatja.)
+# (h) AZONOS TARTALMU, de MAS NEVu uj fajl -> szinten KIZAROLAG untracked elteres
 echo "azonos tartalom" > "$R/egyik-nev.txt"
 echo "azonos tartalom" > "$FSecond/masik-nev.txt"
 OUT=$(bash "$CGate" --repo "$R" 2>&1)
-expect "T14h azonos tartalmu, MAS NEVu uj fajl -> utkozes" PIROS "WORKTREE-UTKOZES" "$OUT"
+expect "T14h azonos tartalmu, MAS NEVu uj fajl -> KIZAROLAG untracked elteres, nincs utkozes" ZOLD "WORKTREE-UTKOZES" "$OUT"
 rm -f "$R/egyik-nev.txt" "$FSecond/masik-nev.txt"
 
 
-# ── T15: MUTACIO -- a munkafa-ujjlenyomat HAROM RESZE KULON-KULON ────────────
-# 🛑 EZ A BLOKK AZT IGAZOLJA, HOGY EGYIK RESZ SEM FELESLEGES. Merve: a harom resz kikapcsolasa
-#    PONTOSAN EGY-EGY esetet buktat -- vagyis mindegyik olyasmit fog, amit a masik ketto nem:
-#      `git diff HEAD`      -> T14d (kovetett fajl eltero TARTALMA)
-#      `status --porcelain` -> T14h (azonos tartalmu, MAS NEVu uj fajl)
-#      `hash-object`        -> T14f (azonos nevu uj fajl eltero TARTALMA)
-#    Egy resz, amirol nem tudjuk bizonyitani, hogy mer, hamis biztonsag -- ezert kap sajat esetet.
+# ── T15: MUTACIO -- a megmaradt `diff HEAD` resz tovabbra is szukseges ───────
+# 🛑 A FINGERPRINT HAROM RESZBoL KETToRE (rev-parse HEAD + diff HEAD) csokkent -- lasd
+#    worktree_fingerprint_compute() fejleceben a #1475/aeaa45e5 mert esetet: az untracked
+#    (`status --porcelain` / `hash-object`) reszek szandekosan KIKERULTEK, mert egy IDEGEN,
+#    forrast nem erinto untracked fajl hamis utkozest adott (T14e/T14f/T14h fent). A
+#    `rev-parse HEAD` szuksegesseget a T13 mutacio igazolja; ITT azt, hogy a MEGMARADT
+#    `diff HEAD` resz tovabbra is load-bearing. A MASODIK irany -- hogy az ELTAVOLITOTT
+#    reszek VISSZAHOZATALA ismet hamis riasztast ad -- a T29 blokkban all.
 echo
-echo "T15 -- MUTACIO: a munkafa-ujjlenyomat harom resze"
+echo "T15 -- MUTACIO: a megmaradt 'diff HEAD' resz tovabbra is szukseges"
 
 mut_case() {   # <cimke> <sed-minta> <ellenorzo-minta> <eloallito-fuggveny>
   local label="$1" sedexpr="$2" guard="$3" setup="$4"
@@ -443,22 +446,8 @@ setup_diff() {   # kovetett fajl eltero tartalommal MINDKET oldalon
   echo "masik" > "$FTmp/t15a-masodik/kod.txt"
   echo "$r"
 }
-setup_names() {  # azonos tartalmu, MAS NEVu uj fajl
-  local r; r=$(setup_pair t15b)
-  echo "azonos" > "$r/egyik-nev.txt"
-  echo "azonos" > "$FTmp/t15b-masodik/masik-nev.txt"
-  echo "$r"
-}
-setup_content() { # azonos nevu uj fajl ELTERo tartalommal
-  local r; r=$(setup_pair t15c)
-  echo "egyik" > "$r/ujdonsag.txt"
-  echo "masik" > "$FTmp/t15c-masodik/ujdonsag.txt"
-  echo "$r"
-}
 
 mut_case "diffHEAD" 's|^    git -C "$wt" diff HEAD 2>/dev/null$|    true|' '^    true$' setup_diff
-mut_case "status"   's|^    git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null$|    true|' '^    true$' setup_names
-mut_case "hashobj"  's|\[ -f "$wt/$f" \] && git -C "$wt" hash-object -- "$f" 2>/dev/null|true|' 'then true$\|true$' setup_content
 
 # ── T13: MUTACIO -- a HEAD-osszevetes kikapcsolva ────────────────────────────
 # hu: A T12a zoldje csak akkor er valamit, ha a HEAD-osszevetes nelkul VISSZAJON a hamis riasztas.
@@ -1370,6 +1359,125 @@ if [ "$RC" -eq 0 ]; then
 else
   echo "  ❌ T28b3 RC=$RC, 0 lenne a helyes -- worktree-bol hivva a MAR ELFOGADOTT duplikatum is blokkol"
   FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# ── T29: #1475/aeaa45e5 -- CELZOTT ELFOGADASI TESZTEK ────────────────────────
+# 🛑 A KARTYA HAROM ELFOGADASI FELTETELE:
+#    (1) azonos HEAD + azonos build-szam + EGYIK oldalon IDEGEN untracked fajl -> NINCS utkozes,
+#        ES egy mutacio (az untracked-szures visszahozasa) TENYLEGESEN pirosra viszi.
+#    (2) a build-szam-fajl MAGA piszkos, VAGY a ket worktree kodallapota VALODI (nyomon kovetett)
+#        elteres -> UTKOZES (hamis negativ kizarva).
+#    (3) a #1475-nel megkerulessel zart QuantumAE-eset ujramerve a javitott kapuval MEHET,
+#        megkerules nelkul.
+echo
+echo "T29 -- #1475/aeaa45e5 celzott elfogadasi tesztek"
+
+# hu: kozos kiindulas -- ket worktree AZONOS commiton, tiszta munkafaval (sajat peldany, hogy a
+#     T15 allapotatol fuggetlen maradjon)
+setup_pair29() {   # <nev> -> a repo utja (stdout)
+  local name="$1" r
+  r=$(new_repo "$name" 800)
+  echo "eredeti" > "$r/kod.txt"
+  gitq "$r" add kod.txt
+  gitq "$r" commit -q -m "feat: kod (build 800)"
+  gitq "$r" worktree add -q --detach "$FTmp/$name-masodik" HEAD >/dev/null 2>&1
+  echo "$r"
+}
+
+# (1) IDEGEN, forrast nem erinto untracked jegyzet -- PONTOSAN a #1475/aeaa45e5 alakja
+#     A NEV PARAMETER KOTELEZo: `new_repo` masodik hivasa UGYANARRA a nevre mar letezo repot
+#     talalna, a `git commit` "nothing to commit"-tel bukna, es ez a HIBASZOVEG szennyezne be a
+#     `$(...)` altal visszaadott utvonalat -- MERT ESET, ez a hiba a fejlesztes soran elo is allt.
+setup_foreign_note() {   # <nev> -> a repo utja (stdout)
+  local name="$1" r
+  r=$(setup_pair29 "$name")
+  mkdir -p "$r/docs"
+  echo "kezi session jegyzete egy masik kartyahoz" > "$r/docs/nav-level-renewCertificate-repro.txt"
+  echo "$r"
+}
+
+R=$(setup_foreign_note t29a)
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T29-1 idegen untracked jegyzet a fo klonban -> NINCS utkozes" ZOLD "WORKTREE-UTKOZES" "$OUT"
+
+# hu: MUTACIO -- az untracked-szures visszahozasa: ugyanerre a szetupra PIROSNAK kell jonnie,
+#     kulonben a fenti ZOLD nem a szures erdeme, hanem veletlen (bukas-eloallitas-igazolasa).
+mut_case_regression() {   # <cimke> <visszaallitando sor> <ellenorzo-minta> <eloallito-fuggveny>
+  local label="$1" instext="$2" guard="$3" setup="$4"
+  local mutant="$FTmp/mutans-$label.sh"
+  local finsert="$FTmp/insert-$label.txt"
+
+  printf '%s\n' "$instext" > "$finsert"
+  sed "/^    git -C \"\$wt\" diff HEAD 2>\/dev\/null\$/r $finsert" "$CGate" > "$mutant"
+
+  if ! grep -q "$guard" "$mutant"; then
+    echo "  ❌ T29-$label -- a mutacio nem fogott (a mero a hibas, nem a kapu)"
+    FFail=$((FFail + 1))
+    return
+  fi
+
+  local R2
+  R2=$($setup)
+  OUT=$(bash "$mutant" --repo "$R2" 2>&1)
+  expect "T29-$label a mutans VISSZAHOZZA a hamis riasztast" PIROS "WORKTREE-UTKOZES" "$OUT"
+  OUT=$(bash "$CGate" --repo "$R2" 2>&1)
+  expect "T29-$label KONTROLL: az EREDETI (javitott) kapu csendben marad" ZOLD "WORKTREE-UTKOZES" "$OUT"
+}
+
+# hu: SAJAT (masik nevu) repo a mutacios agnak -- lasd fent a nev-utkozesrol szolo megjegyzest:
+#     ugyanazt a "t29a" nevet masodszor hasznalva a `new_repo` mar letezo repora futna.
+mut_case_regression "untracked-visszaallitva" \
+  '    git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null' \
+  'status --porcelain --untracked-files=all' \
+  "setup_foreign_note t29a2"
+
+# (2a) A BUILD-SZAM-FAJL MAGA PISZKOS, DE A KIOLVASOTT ERTEK (whitespace-trim utan) VALTOZATLAN --
+#      MEGIS UTKOZES, mert a `diff HEAD` a nyers fajl-tartalom elteret fogja (peldaul sorveg-
+#      elteres ugyanazon a kiadott szamon). Ha a szam VALOBAN eltero volna (peldaul 801), az mar
+#      NEM ugyanazt az azonositot hordozna -- annak semmi koze az "utkozes" fogalmahoz, es a
+#      check_worktrees-nek szandekosan sincs ra jelzese (a detektor kizarolag AZONOS ertekre
+#      HORDOZOTT eltero kodallapotot fog).
+printf '800\r\n' > "$FTmp/t29a-masodik/BuildNumberV2.txt"
+OUT=$(bash "$CGate" --repo "$R" 2>&1)
+expect "T29-2a a build-szam-fajl maga piszkos (whitespace-elteres, azonos ertek) -> utkozes" PIROS "WORKTREE-UTKOZES" "$OUT"
+
+# (2b) AZONOS build-szam, DE VALODI (nyomon kovetett) kodallapot-elteres -- TOVABBRA IS UTKOZES.
+R2B=$(setup_pair29 t29b)
+echo "MASIK kod" > "$FTmp/t29b-masodik/kod.txt"
+OUT=$(bash "$CGate" --repo "$R2B" 2>&1)
+expect "T29-2b azonos build-szam + VALODI kodallapot-elteres -> utkozes" PIROS "WORKTREE-UTKOZES" "$OUT"
+
+# (3) VALOS ESET UJRAMERESE: a QuantumAE fo klonja a #1475 zarasakor egy idegen untracked jegyzetet
+#     hordozott (docs/nav-level-renewCertificate-T0002-2026-09-05.txt) -- egy, a fo klon JELENLEGI
+#     HEAD-jevel azonos ideiglenes worktree-vel megismetelve azt az osszehasonlitast, a javitott
+#     kapunak MEHET-et kell adnia, WT_BSZ_GATE-atiras NELKUL.
+echo
+echo "T29-3 -- valos eset ujramerese: QuantumAE fo klonja (#1475/aeaa45e5)"
+if [ -d "$CRealRepo/.git" ]; then
+  if git -C "$CRealRepo" status --porcelain --untracked-files=all 2>/dev/null | grep -q '^?? '; then
+    FMainHead=$(git -C "$CRealRepo" rev-parse HEAD)
+    FReproWt="$FTmp/quantumae-repro-fo-klon-azonos-head"
+    if git -C "$CRealRepo" worktree add -q --detach "$FReproWt" "$FMainHead" >/dev/null 2>&1; then
+      OUT=$(bash "$CGate" --repo "$CRealRepo" 2>&1)
+      if echo "$OUT" | grep -q "$FReproWt"; then
+        echo "  ❌ T29-3 a valos QuantumAE-eset TOVABBRA IS utkozest jelez a fo klonnal"
+        FFail=$((FFail + 1))
+        echo "$OUT" | grep -B1 -A3 "WORKTREE-UTKOZES" | sed 's/^/       | /'
+      else
+        echo "  ✅ T29-3 a valos QuantumAE-eset (#1475/aeaa45e5) MEHET-et ad, megkerules nelkul"
+        FPass=$((FPass + 1))
+      fi
+      git -C "$CRealRepo" worktree remove --force "$FReproWt" >/dev/null 2>&1
+    else
+      echo "  ⚠️  T29-3 KIHAGYVA -- nem sikerult ideiglenes worktree-t letesiteni a fo klon HEAD-jen"
+    fi
+  else
+    echo "  ⚠️  T29-3 KIHAGYVA -- a fo klon MA TISZTA (nincs untracked fajl), a teszt ures lenne"
+    echo "     (ez NEM zold: a valos eset ujramerese elmaradt)"
+  fi
+else
+  echo "  ⚠️  T29-3 KIHAGYVA -- a QuantumAE repo nincs a helyen: $CRealRepo"
+  echo "     (ez NEM zold: a valos eset ujramerese elmaradt)"
 fi
 
 # ── Osszegzes ─────────────────────────────────────────────────────────────────
