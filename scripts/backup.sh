@@ -106,6 +106,24 @@ if [[ -d "${HOME}/Library/LaunchAgents" ]]; then
   ( cd "${HOME}" && find Library/LaunchAgents -maxdepth 1 -name "com.${MAIN_AGENT_ID}.*.plist" -print ) >> "${HOMELIST}"
 fi
 
+# --- Work/Claude coverage: START ---
+# The fleet's global rule sources (CLAUDE.md, hooks/, agents/*.md, commands/,
+# scripts/) live in ~/Work/Claude, a separate git repo with no remote -- its
+# history exists only on this machine. Cover its git-tracked files plus the
+# .git directory (history), so losing this machine doesn't take the fleet's
+# rule source and hook enforcement with it. project-sessions/ and Vault/ are
+# deliberately excluded: `git ls-files` already skips gitignored content, so
+# no extra filtering is needed here.
+WORK_CLAUDE_DIR="${HOME}/Work/Claude"
+if git -C "${WORK_CLAUDE_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  while IFS= read -r rel; do
+    [[ -z "${rel}" ]] && continue
+    echo "Work/Claude/${rel}" >> "${HOMELIST}"
+  done < <(git -C "${WORK_CLAUDE_DIR}" ls-files)
+  add_if "${HOMELIST}" "${HOME}" Work/Claude/.git
+fi
+# --- Work/Claude coverage: END ---
+
 if [[ ! -s "${REPOLIST}" && ! -s "${HOMELIST}" ]]; then
   echo "backup: nothing to archive" >&2
   exit 0
