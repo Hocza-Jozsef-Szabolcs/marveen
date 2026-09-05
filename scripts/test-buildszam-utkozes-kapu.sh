@@ -1234,6 +1234,85 @@ else
   echo "     (ez NEM zold: a valos eset merese elmaradt)"
 fi
 
+# ── T27: SQUASH-MERGE (kartya 5a1c3962) -- a kapu NEM ad hamis leletet ─────────
+# hu: A `wt.sh done` mostantol `git merge --squash`-ot hasznal (nem sima `merge`-t): a
+#     beolvasztott ag SOHA nem valik a fo ag oseive, minden squash-commitnak PONTOSAN
+#     EGY valodi szuloje van (a fo ag korabbi vege). MERT (a kod olvasasaval, nem
+#     talalgatva): az is_release/VISSZATERES detektor MINDEN szulore VONATKOZTATVA
+#     donti el, valtozott-e az ertek -- ez 1-szulos commitra PONTOSAN ugyanugy mukodik,
+#     mint egy hagyomanyos, soha nem mergelt commitra (a 2-szulos "MASODIK szulohoz
+#     kepest is" szabaly egy MERGE-specifikus kiveteles eset, ami squash-nal egyszeruen
+#     nem all elo -- nincs 2. szulo, aminek a kizarasat pluszban kellene kezelni).
+# en: `wt.sh done` now uses `git merge --squash` (not a plain merge): the merged branch
+#     never becomes an ancestor of main, every squash commit has EXACTLY ONE real parent
+#     (main's own prior tip). MEASURED (by reading the code, not assuming): the
+#     is_release/VISSZATERES detector decides on a per-parent basis regardless of parent
+#     count -- this works identically for a 1-parent commit, squash or not (the 2-parent
+#     "also against the second parent" rule is a merge-specific exception that simply
+#     does not arise for squash -- there is no second parent to exclude).
+echo
+echo "T27 -- squash-merge: a kapu nem ad hamis leletet egymast koveto squash-commitokra"
+
+R=$(new_repo "t27" 100)
+
+# T27a: EGYETLEN squash-merge (tobb belso lepes egybeolvasztva) -- csak EGY uj ertek
+#       jelenik meg a fo agon, a belso lepesek (pl. 101) SOHA nem latszanak. Ez a
+#       squash-nak PONTOSAN a celja: kevesebb zaj, nem tobb.
+gitq "$R" checkout -q -b feat-a
+bump "$R" 101 "munka 1. lepes (build 101)"
+bump "$R" 105 "munka 2. lepes (build 105)"
+gitq "$R" checkout -q main
+gitq "$R" merge -q --squash feat-a
+gitq "$R" commit -q -m "#1 kartya-a Squash: 105
+
+Squashed-from: feat-a@$(git -C "$R" rev-parse feat-a)"
+OUT=$(bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T27a egyetlen squash-merge utan nincs lelet" ZOLD "🛑" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T27a2 RC=0"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T27a2 RC=$RC, 0 lenne a helyes"; FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T27b: MASODIK, KOVETKEZO squash-merge ugyanarra a fo agra -- a lanc tovabb no
+#       (105 -> 110), tovabbra sincs lelet. Ez az ismetelt `wt done` mintaja.
+gitq "$R" checkout -q -b feat-b
+bump "$R" 110 "munka (build 110)"
+gitq "$R" checkout -q main
+gitq "$R" merge -q --squash feat-b
+gitq "$R" commit -q -m "#2 kartya-b Squash: 110
+
+Squashed-from: feat-b@$(git -C "$R" rev-parse feat-b)"
+OUT=$(bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T27b a masodik, egymast koveto squash-merge utan sincs lelet" ZOLD "🛑" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T27b2 RC=0"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T27b2 RC=$RC, 0 lenne a helyes"; FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T27c: KONTROLL -- a squash NEM vakitja el a detektort valodi regressziora. Egy
+#       squash-commit is a fo ag ELSO-szulo lancan all (pontosan 1 szuloje van), a
+#       CSOKKENES-detektor pedig kizarolag ezen a lancon jar -- egy 110 utani squash,
+#       ami 105-re lepteti vissza a szamot, EPPUGY PIROS kell legyen, mint egy sima
+#       commitnal. (A belso, 101-es lepes a T27a-ban a squash miatt SOSEM kerult a fo
+#       agra -- ezert a decreasing-teszt a 110->105 iranyt hasznalja, nem a 101-et.)
+gitq "$R" checkout -q -b feat-e
+bump "$R" 105 "hibas visszalepes (build 105, mar volt magasabb)"
+gitq "$R" checkout -q main
+gitq "$R" merge -q --squash feat-e
+gitq "$R" commit -q -m "#5 kartya-e Squash: 105 (csokkenes)
+
+Squashed-from: feat-e@$(git -C "$R" rev-parse feat-e)"
+OUT=$(bash "$CGate" --repo "$R" 2>&1); RC=$?
+expect "T27c [KONTROLL] squash-commit CSOKKENO erteke TOVABBRA IS PIROS" PIROS "CSOKKENT" "$OUT"
+if [ "$RC" -eq 1 ]; then
+  echo "  ✅ T27c2 a squash NEM vakitja el a csokkenes-detektort (RC=1)"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T27c2 RC=$RC, 1 lenne a helyes -- a squash elfedne egy valodi regressziot"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
 # ── Osszegzes ─────────────────────────────────────────────────────────────────
 echo
 echo "EREDMENY: $FPass rendben | $FFail elter"
