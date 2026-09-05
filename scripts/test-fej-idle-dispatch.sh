@@ -839,6 +839,80 @@ else
   check "T47 mutansnal a Delphi-jelu kartya IS kiosztva (a T44 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-nyelvi-pas2 backend')"
 fi
 
+# ── T48-T52: MODELL-ALAPU TESTVER-ATIRANYITAS (kartya 1f613c94) ─────────────────────────────
+# Jozsi kerese (2026-09-05, Telegram): "Arra kellene figyelni, hogy az Opus fejek lehetoleg csak
+# nehez feladatot kapjanak a koltseghatekonysag miatt." A fej-idle-dispatch a kiosztaskor eddig
+# nem nezte a cel-fej MODELLJET -- delphi (Opus) es pascal (Sonnet) ugyanazon a szakteruleten
+# (fej_sajat_projektek: "VHR VHR5") ketszeresen van lefedve, es a valasztas eddig csak azon mult,
+# melyikuk volt eppen tetlen. A "nehezseg" nincs mert mezokent a kartyan -- az egyetlen gepiesen
+# mert jel az OLCSOBB, SZABAD (tetlen) testver-fej letezese.
+FAgentsJsonDelphiPascal='[{"name":"marveen","running":true},{"name":"delphi","running":true,"model":"claude-opus-5"},{"name":"pascal","running":true,"model":"claude-sonnet-5"},{"name":"rendezo","running":true}]'
+FAgentsJsonDelphiCsak='[{"name":"marveen","running":true},{"name":"delphi","running":true,"model":"claude-opus-5"},{"name":"rendezo","running":true}]'
+FAgentsJsonAzonosModell='[{"name":"marveen","running":true},{"name":"delphi","running":true,"model":"claude-sonnet-5"},{"name":"pascal","running":true,"model":"claude-sonnet-5"},{"name":"rendezo","running":true}]'
+
+echo "── T48: delphi (Opus) sajat kartyaja -> OLCSOBB, SZABAD testver (pascal, Sonnet) kapja ──"
+setup_case
+printf '%s' "$FAgentsJsonDelphiPascal" > "$FTmp/agents.json"
+seed_card K-delphi-opus planned delphi
+rc=$(run_script)
+check "T48 a kartyat PASCAL kapta"                 "1" "$(hivas_szam 'KIOSZTAS: K-delphi-opus pascal')"
+check "T48 delphi NEM probalta a sajat kartyajat"  "0" "$(hivas_szam 'KIOSZTAS: K-delphi-opus delphi')"
+check "T48 ATIRANYITVA jelzes a kimenetben"        "1" "$(grep -c 'ATIRANYITVA' "$FTmp/kimenet" || true)"
+check "T48 kilepesi kod 0"                         "0" "$rc"
+
+echo "── T49: a testver (pascal) FOGLALT -> delphi a sajat kartyajat kapja (nincs valtozas) ──"
+setup_case
+printf '%s' "$FAgentsJsonDelphiPascal" > "$FTmp/agents.json"
+seed_card K-delphi-opus planned delphi
+seed_card K-pascal-fut in_progress pascal
+rc=$(run_script)
+check "T49 delphi kapta a sajat kartyajat"  "1" "$(hivas_szam 'KIOSZTAS: K-delphi-opus delphi')"
+check "T49 pascal NEM probalta"             "0" "$(hivas_szam 'KIOSZTAS: K-delphi-opus pascal')"
+check "T49 kilepesi kod 0"                  "0" "$rc"
+
+echo "── T50: NINCS testver-fej a futok kozott -> delphi a sajat kartyajat kapja ─────"
+setup_case
+printf '%s' "$FAgentsJsonDelphiCsak" > "$FTmp/agents.json"
+seed_card K-delphi-opus planned delphi
+rc=$(run_script)
+check "T50 delphi kapta a sajat kartyajat"  "1" "$(hivas_szam 'KIOSZTAS: K-delphi-opus delphi')"
+check "T50 kilepesi kod 0"                  "0" "$rc"
+
+echo "── T51: delphi es pascal AZONOS modellen -> nincs 'olcsobb', nincs atiranyitas ──"
+setup_case
+printf '%s' "$FAgentsJsonAzonosModell" > "$FTmp/agents.json"
+seed_card K-delphi-opus planned delphi
+rc=$(run_script)
+check "T51 delphi kapta a sajat kartyajat"  "1" "$(hivas_szam 'KIOSZTAS: K-delphi-opus delphi')"
+check "T51 pascal NEM probalta"             "0" "$(hivas_szam 'KIOSZTAS: K-delphi-opus pascal')"
+check "T51 kilepesi kod 0"                  "0" "$rc"
+
+echo "── T52 (MUTACIO): az atiranyitas kivetele -> a T48 BUKJON vissza ───────────────"
+CMutans48="$FTmp/fej-idle-dispatch-mutans48.sh"
+python3 - "$CScript" "$CMutans48" <<'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+new = re.sub(
+    r"\n *cel_fej=\"\$fej\"\n *if \[ -n \"\$cards\" \]; then\n.*?\n *fi\n",
+    "\n    cel_fej=\"$fej\"\n",
+    text, count=1, flags=re.S,
+)
+if new != text:
+    open(dst, 'w', encoding='utf-8').write(new)
+PYEOF
+if [ ! -s "$CMutans48" ] || cmp -s "$CScript" "$CMutans48" 2>/dev/null; then
+  echo "  ⚠️  T52 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonDelphiPascal" > "$FTmp/agents.json"
+  seed_card K-delphi-opus planned delphi
+  cp "$CMutans48" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T52 mutansnal delphi kapja a kartyat (a T48 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-opus delphi')"
+fi
+
 echo
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo "  ✅ $FPass  ❌ $FFail"

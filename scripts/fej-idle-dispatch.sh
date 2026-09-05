@@ -169,6 +169,56 @@ for a in json.load(sys.stdin):
     if a.get('running') and a['name'] not in ('marveen','rendezo'):
         print(a['name'])")
 
+# 🛑 MODELL-ALAPU TESTVER-ATIRANYITAS (kartya 1f613c94, Jozsi 2026-09-05: "az Opus fejek
+#    lehetoleg csak nehez feladatot kapjanak a koltseghatekonysag miatt"). A fenti `running`
+#    lekerdezes csak a nevet adja vissza, a modellt nem -- ezert egy masodik lekerdezessel a
+#    fej->modell parokat is beolvassuk (a mock curl teszt ugyanazt a statikus valaszt adja
+#    vissza tobbszori hivasra is, tehat ez nem uj elesben-mert kockazat).
+agents_modellek=$(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/agents \
+  | python3 -c "import json,sys
+for a in json.load(sys.stdin):
+    print(a['name'], a.get('model') or '')")
+
+fej_modellje() {
+  echo "$agents_modellek" | awk -v f="$1" '$1==f{print $2; exit}'
+}
+
+# hu: numerikus koltseg-rang -- 0 = ismeretlen modell (SEM forras-, SEM celoldalon nem valt ki
+#     atiranyitast), 1=haiku (legolcsobb) .. 3=opus (legdragabb).
+modell_rang() {
+  case "$1" in
+    *opus*)   echo 3 ;;
+    *sonnet*) echo 2 ;;
+    *haiku*)  echo 1 ;;
+    *)        echo 0 ;;
+  esac
+}
+
+# hu: a "nehezseg" NINCS mert mezokent a kartyan -- a fuggveny ezert NEM a kartya cimebol vagy
+#     leirasabol talal ki heurisztikat, az EGYETLEN gepiesen mert jel egy OLCSOBB, SZABAD (azaz
+#     a hivaskori $idle listaban allo) testver-fej letezese, ahol "testver" = fej_sajat_projektek()
+#     szerint AZONOS (nem OPEN, nem ures) szakterulet. Ha nincs ilyen, a kartya marad, ahol van.
+fej_olcsobb_szabad_testver() {
+  local fej="$1" engedett_fej rang_fej masik engedett_masik rang_masik
+  engedett_fej=$(fej_sajat_projektek "$fej")
+  [ -z "$engedett_fej" ] && return 1
+  [ "$engedett_fej" = "OPEN" ] && return 1
+  rang_fej=$(modell_rang "$(fej_modellje "$fej")")
+  [ "$rang_fej" = "0" ] && return 1
+  for masik in $idle; do
+    [ "$masik" = "$fej" ] && continue
+    engedett_masik=$(fej_sajat_projektek "$masik")
+    [ "$engedett_masik" != "$engedett_fej" ] && continue
+    rang_masik=$(modell_rang "$(fej_modellje "$masik")")
+    [ "$rang_masik" = "0" ] && continue
+    if [ "$rang_masik" -lt "$rang_fej" ]; then
+      echo "$masik"
+      return 0
+    fi
+  done
+  return 1
+}
+
 active=$(sqlite3 "$DB" "select assignee from kanban_cards where status in ('in_progress','testing') and archived_at is null and assignee is not null group by assignee;")
 
 idle=$(comm -23 <(echo "$running" | sort -u) <(echo "$active" | sort -u))
@@ -185,6 +235,16 @@ for fej in $idle; do
   # eltoroltem!") -- a VHR-projektu planned kartyak mostantol ugyanugy kioszthatok, mint barmely
   # mas kartya. A korabbi kizaro szures (project='VHR' vagy cim/leiras VHR-emlites) itt megszunt.
   cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='planned' and archived_at is null order by case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end, created_at asc;")
+
+  # 🛑 Ha VAN sajat kartyaja, de olcsobb+szabad testver all rendelkezesre (lasd
+  #    fej_olcsobb_szabad_testver fent), a kiosztas CELJE a testver, nem $fej -- CSAK a sajat
+  #    (nem fallback) agra vonatkozik, a delegalatlan/marveen fallback-kartyakra nem.
+  cel_fej="$fej"
+  if [ -n "$cards" ]; then
+    testver=$(fej_olcsobb_szabad_testver "$fej") || testver=""
+    [ -n "$testver" ] && cel_fej="$testver"
+  fi
+
   # Ha a fejnek nincs SAJAT nevere allitott planned kartyaja, a delegalatlan (assignee NULL)
   # es a marveen-nevu planned kartyak is jelolt kiosztasi celok -- a szures korabban CSAK
   # assignee='$fej'-et nezte, ezert ezek strukturalisan sosem kaptak kiosztast (c928b7c7).
@@ -265,10 +325,13 @@ for fej in $idle; do
       echo "GYANUS: $fej -> $card mar keszen allhat (a leirasban lezaro jelzo all) -- ELLENORIZD"
       continue
     fi
+    if [ "$cel_fej" != "$fej" ]; then
+      echo "ATIRANYITVA: $fej -> $cel_fej (kartya $card) -- $fej modellje ($(fej_modellje "$fej")) dragabb, $cel_fej ($(fej_modellje "$cel_fej")) tetlen es olcsobb, azonos szakterulet [$(fej_sajat_projektek "$fej")]"
+    fi
     echo "TETLEN: $fej -> $card kiosztasa..."
     # `if` az egyetlen `set -e`-kivetel: egy blokkolt fej (nemnulla rc) NE szakitsa meg a ciklust,
     # kulonben az abecerendben UTANA kovetkezo fejek egyike sem kap eselyt kiosztasra.
-    if ki=$(bash scripts/kartya-kiosztas.sh "$card" "$fej" 2>&1); then
+    if ki=$(bash scripts/kartya-kiosztas.sh "$card" "$cel_fej" 2>&1); then
       echo "  $ki"
       kiosztva=1
       break
