@@ -19,6 +19,18 @@ import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
 
+// scripts/channels.sh's own cold-boot guard sender (the two "MAIN_AGENT_ISOLATED_CONFIG
+// resolved empty" WARN triggers). NOT a fleet agent -- it has no tmux session and no
+// agents/<name>/ directory. Deliberately NOT given a real agents/ dir: that would pull
+// it into listAllAgentNames()'s lifecycle sweep (context-guard, heartbeat), which treats
+// every entry there as a real, keep-alive-worthy agent. MEASURED (2026-09-05, card
+// main-agent-kozos-claude-boot-20260904): before this exemption, isKnownAgent rejected
+// every message this sender ever attempted with 403 -- the agent_messages table has
+// never once recorded "channels-sh-guard" as a sender, despite the install restarting
+// channels.sh many times a day. The guard's own bash code discards curl's failure
+// silently (`|| true`), so the alert was never actually being delivered.
+export const CHANNELS_SH_GUARD_SENDER = 'channels-sh-guard'
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -76,7 +88,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // isKnownAgent alone rejects it. Match on the router's normalization to stay
     // symmetric with the other guards above.
     const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
-    if (!isOwnerSender && !isKnownAgent(sanitizeAgentIdent(from))) {
+    const isGuardSender = sanitizeAgentIdent(from) === CHANNELS_SH_GUARD_SENDER
+    if (!isOwnerSender && !isGuardSender && !isKnownAgent(sanitizeAgentIdent(from))) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
       json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
       return true

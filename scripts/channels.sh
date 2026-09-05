@@ -593,6 +593,38 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir" >> "$INSTALL_DIR/store/channels-failures.log"
   fi
+  # hu: Ismetli a dashboard-ertesitest, amig a szerver fel nem all. A
+  #     channels.sh es a dashboard a start.sh-ban PARHUZAMOSAN indul (nincs
+  #     kettejuk kozott keszenlet-varas), tehat egy hidegindulaskori
+  #     guard-uzenet celba-eres nelkul veszhetne el pontosan akkor, amikor a
+  #     legjobban szamitana. Csak a HIBA-agon fut (a `done` folytatodik ha nem
+  #     sikerul), ezert a legrosszabb esetbeli ~30s varakozas a normal
+  #     bootot nem lassitja.
+  # en: Retries the dashboard notification until the server comes up.
+  #     channels.sh and the dashboard start IN PARALLEL in start.sh (no
+  #     readiness wait between them), so a cold-boot guard message could be
+  #     lost without ever reaching its destination, exactly when it matters
+  #     most. Runs only on the FAILURE branch (the caller continues either
+  #     way), so the ~30s worst case never slows down a normal boot.
+  channels_guard_notify() {
+    local content="$1" attempt=0 _guard_port resp
+    [ -f "$INSTALL_DIR/store/.dashboard-token" ] || return 0
+    _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+    while [ "$attempt" -lt 6 ]; do
+      resp="$(curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token" 2>/dev/null)" \
+        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"$content\"}" \
+        2>/dev/null)"
+      case "$resp" in
+        *'"id"'*) return 0 ;;
+      esac
+      attempt=$((attempt + 1))
+      [ "$attempt" -lt 6 ] && sleep 5
+    done
+    return 1
+  }
+
   # LOUD REGRESSION GUARD, in two triggers. Both mean the same thing: this boot
   # resolved to the shared ~/.claude, so the main agent rides the rotating
   # shared credential session -- exactly how the 2026-07-27 evening 401 outage
@@ -611,15 +643,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # about, and trigger 2 is structurally blind to it.
   if [ -z "$CFG_ENV" ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although a fleet setup-token exists (store/.claude-oauth-token) -- MAIN_AGENT_ISOLATED_CONFIG is unset, so the main bot authenticates from the rotating shared credential and can 401 into a silent channel." >> "$INSTALL_DIR/store/channels-failures.log"
-    if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
-      _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-      curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
-        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart.\"}" \
-        >/dev/null 2>&1 || true
-      unset _guard_port
-    fi
+    channels_guard_notify "[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart." || true
   fi
   # Trigger 2 (below): an install that HAS run isolated before. Its
   # .channels-config dir is still on disk, yet this boot resolved to the shared
@@ -628,16 +652,9 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # trigger blind on a fresh install, hence trigger 1.
   if [ -z "$CFG_ENV" ] && [ -d "$INSTALL_DIR/.channels-config" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although isolated dir $INSTALL_DIR/.channels-config exists -- MAIN_AGENT_ISOLATED_CONFIG resolution came back empty (overrides/.env key lost?). Auth rides the rotating shared session and can 401." >> "$INSTALL_DIR/store/channels-failures.log"
-    if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
-      _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-      curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
-        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart.\"}" \
-        >/dev/null 2>&1 || true
-      unset _guard_port
-    fi
+    channels_guard_notify "[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart." || true
   fi
+  unset -f channels_guard_notify
   unset _cfg_line _cfg_mode _cfg_dir
 fi
 unset _node_bin
