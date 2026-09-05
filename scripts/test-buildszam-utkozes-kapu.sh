@@ -1313,6 +1313,65 @@ else
   FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
 fi
 
+# ── T28: ELFOGADOTT-DUPLIKATUM WORKTREE-BOL HIVVA (kartya 89d9b2e5) ────────────
+# hu: A `repoPathPattern` a CRepo-t (a `--repo` ertekét) illeszti, VEGE-horgonnyal
+#     (pl. "QCassa\\.com/JokerQ$"). A `wt.sh done` viszont a FEATURE-WORKTREE utvonalat
+#     adja at (`<base>/.worktrees/<feature>/<repo>`), ami a `.worktrees/<feature>/` szegmens
+#     miatt SOHA nem vegzodik a fo repo nevere -- egy elfogadott bejegyzes tehat direkt
+#     `--repo <fo klon>` hivasnal MuKODIK, de `wt done`-bol (worktree-utvonal) SOHA nem
+#     illeszkedik, es a `wt done` a MAR ELFOGADOTT duplikatumon is elakad. MERT (2026-09-05,
+#     JokerQ, kartya 89d9b2e5): a 965-os es 1012-es bejegyzes VALODI wt.sh done-bol
+#     hivva NEM alkalmazodott, csak kozvetlen --repo hivasnal.
+echo
+echo "T28 -- elfogadott duplikatum worktree-bol hivva is alkalmazodjon (kartya 89d9b2e5)"
+
+# Ugyanaz a T1 mintaja: ket testver-commit KOZOS szuloboI (100), MINDKETTo 105-re lep,
+# majd egy sima merge-dzsel egy tortenetbe kerulnek -- ez megbizhatoan letrehozza a
+# duplikatumot (squash-al ez a konkret ertek-egyezes NO-OP-pa esne ossze, lasd T27a).
+R=$(new_repo "t28" 100)
+bump "$R" 105 "feat: X ag (build 105)"
+FT28Sha1=$(git -C "$R" rev-parse HEAD)
+gitq "$R" checkout -q -b oldal HEAD~1
+bump "$R" 105 "fix: Y ag (build 105, fuggetlen kodallapot)"
+FT28Sha2=$(git -C "$R" rev-parse HEAD)
+gitq "$R" checkout -q main
+gitq "$R" merge -q --no-edit -m "merge: oldal -> main" oldal 2>/dev/null || {
+  echo "105" > "$R/BuildNumberV2.txt"; gitq "$R" add BuildNumberV2.txt
+  gitq "$R" commit -q -m "merge: oldal -> main"
+}
+
+FT28Accepted="$FTmp/t28-accepted.json"
+cat > "$FT28Accepted" <<JSONEOF
+{"accepted": [{"repoPathPattern": "$(printf '%s' "$(basename "$R")" | sed 's/[\\/&]/\\\\&/g')\$",
+               "buildNumber": "105",
+               "commits": ["$FT28Sha1", "$FT28Sha2"],
+               "card": "test-t28"}]}
+JSONEOF
+
+# T28a KONTROLL: a fo repo utvonalabol, KOZVETLENUL hivva, az elfogadas mukodik.
+OUT=$(BSZ_ACCEPTED_DUP_PATH="$FT28Accepted" bash "$CGate" --repo "$R" 2>&1); RC=$?
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T28a [KONTROLL] kozvetlen repo-utvonalrol az elfogadas mukodik (RC=0)"; FPass=$((FPass + 1))
+else
+  echo "  ❌ T28a RC=$RC, 0 lenne a helyes -- meg a kozvetlen ut is bukik, a teszt-config hibas"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
+# T28b: UGYANEZ a repo, de egy WORKTREE-bol hivva (pontosan a wt.sh done alakja) --
+#       az elfogadasnak UGYANUGY kell mukodnie.
+FT28Wt="$FTmp/t28-worktree"
+gitq "$R" worktree add -q --detach "$FT28Wt" main
+OUT=$(BSZ_ACCEPTED_DUP_PATH="$FT28Accepted" bash "$CGate" --repo "$FT28Wt" 2>&1); RC=$?
+expect "T28b worktree-bol hivva a 105 TOVABBRA IS kiirodik" PIROS "AZONOS ERTEK" "$OUT"
+expect "T28b2 a sor ELFOGADOTT-kent van megjelolve worktree-bol is" PIROS "ELFOGADOTT duplikatum" "$OUT"
+if [ "$RC" -eq 0 ]; then
+  echo "  ✅ T28b3 worktree-bol hivva is NEM blokkol (RC=0) -- ez a wt.sh done tenyleges alakja"
+  FPass=$((FPass + 1))
+else
+  echo "  ❌ T28b3 RC=$RC, 0 lenne a helyes -- worktree-bol hivva a MAR ELFOGADOTT duplikatum is blokkol"
+  FFail=$((FFail + 1)); echo "$OUT" | sed 's/^/       | /'
+fi
+
 # ── Osszegzes ─────────────────────────────────────────────────────────────────
 echo
 echo "EREDMENY: $FPass rendben | $FFail elter"

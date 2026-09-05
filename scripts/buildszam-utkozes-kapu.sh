@@ -498,6 +498,42 @@ def parse_reference(value):
 
 CReferenceEpoch = parse_reference(CReferenceDate) if CReferenceDate else None
 
+# hu: A `repoPathPattern` a FO REPO utvonalara van irva (pl. "QCassa\\.com/JokerQ$"), de a
+#     `wt.sh done` a FEATURE-WORKTREE utvonalat adja at (`<base>/.worktrees/<feature>/<repo>`)
+#     -- ez a `.worktrees/<feature>/` szegmens miatt SOHA nem vegzodik a fo repo nevere. MERT
+#     (2026-09-05, JokerQ, kartya 89d9b2e5): egy MAR ELFOGADOTT duplikatum (965) worktree-bol
+#     hivva NEM alkalmazodott, csak kozvetlen `--repo <fo klon>` hivasnal -- vagyis az egesz
+#     elfogadas-mechanizmus inaktiv volt PONT arra a hivora (`wt.sh done`), amire keszult.
+#     A `git rev-parse --git-common-dir` MINDIG a MEGOSZTOTT .git-re mutat, worktree-bol
+#     hivva IS -- ez a fo repo gyokere, fuggetlenul attol, melyik worktree-bol kerdezzuk.
+# en: `repoPathPattern` is written against the MAIN repo path (e.g. "QCassa\\.com/JokerQ$"),
+#     but `wt.sh done` passes the FEATURE-WORKTREE path (`<base>/.worktrees/<feature>/<repo>`)
+#     -- the `.worktrees/<feature>/` segment means it never ends in the main repo's name.
+#     `git rev-parse --git-common-dir` always points at the SHARED .git, even from a
+#     worktree -- that is the main repo's root, regardless of which worktree asks.
+def accepted_dup_repo_key():
+    try:
+        out = git_text("rev-parse", "--git-common-dir").strip()
+    except Exception:
+        return CRepo
+    # hu: A FO (nem-worktree) repora a git RELATIV ".git"-et ad -- ilyenkor CRepo mar maga a
+    #     helyes kulcs, VALTOZATLANUL: nem szabad ujraepiteni/normalizalni (pl. os.path.normpath
+    #     csendben eltuntetne egy $TMPDIR-bol orokolt dupla perjelet, es egy erre ирt
+    #     repoPathPattern nema, mero-szintu regresszioval szunne meg illeszkedni). Csak a
+    #     WORKTREE-bol hivott eset ad ABSZOLUT utvonalat a MEGOSZTOTT .git-re -- csak akkor
+    #     kell a fo repo gyokeret ujraepiteni belole.
+    # en: For the MAIN (non-worktree) repo, git returns a RELATIVE ".git" -- CRepo is already
+    #     the right key, UNCHANGED (no normpath: that would silently drop a double slash
+    #     inherited from $TMPDIR, breaking a repoPathPattern written against it). Only the
+    #     WORKTREE case returns an ABSOLUTE path to the shared .git -- only then is
+    #     reconstructing the main repo root from it needed.
+    if not out or not os.path.isabs(out):
+        return CRepo
+    if os.path.basename(out) != ".git":
+        return CRepo
+    return os.path.dirname(out) or CRepo
+
+
 # hu: ELFOGADOTT-DUPLIKATUM LISTA (kartya dad8f4af) -- lasd a fejlecben a CAcceptedDupPath
 #     megjegyzeset. Csak a VISSZATERES es a KIADAS-DUPLIKATUM detektor hasznalja: mindketto
 #     (sha, ertek) part hordoz, es a "duplikatum" fogalma pontosan ezt fedi -- egy build-szam
@@ -522,7 +558,7 @@ def load_accepted_duplicates():
     if not isinstance(entries, list):
         return []
 
-    repo_norm = CRepo.replace("\\", "/")
+    repo_norm = accepted_dup_repo_key().replace("\\", "/")
     result = []
     for entry in entries:
         if not isinstance(entry, dict):

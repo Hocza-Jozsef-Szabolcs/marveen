@@ -11,6 +11,26 @@
       ],
       "card": "dad8f4af",
       "note": "akka merge-konfliktus-feloldasa (2026-09-03 08:07, ff192c1) es a #1391/fea51896 (2026-09-03 08:39, 70f62d6) fuggetlenul, egymastol nem tudva adta ki mindketto a 987-et. A tenyleges APK a fea51896-bol (70f62d6) keszult -- akka sajat 987-es allapotabol (ff192c1) binaris nem keszult, kockazat nelkul."
+    },
+    {
+      "repoPathPattern": "QCassa\\.com/JokerQ$",
+      "buildNumber": "965",
+      "commits": [
+        "26fb1f27845d20cd4e38d8aedb5657a5a5a0919b",
+        "0375390014d5a992c23e04d84323cd402f0aaa7f"
+      ],
+      "card": "89d9b2e5",
+      "note": "A #1309/daa61441 (26fb1f2, 2026-09-01 16:08) es a #1310/993e5086 (0375390, 16:11) harom perc kulonbseggel, ugyanabbol az alapbol (szulo 6e66ffa) adta ki mindketto a 965-ot; egyik sem merge (szulok=1). VESZELYTELENSEG MERVE 2026-09-05: a 965-os build EGYETLEN eszkozre sem lett telepitve (store/devices.json telepitesi elozmenyeben nincs 965), 965-os APK/enc a lemezen nincs, es a docs/deployed-versions.md sem tartalmaz 965-os telepitesi sort -- vagyis a ket kodallapot kozul EGYIKBoL sem kerult binaris a kezelohoz, tehat a 8/2025 NGM 23. par. (1) szerinti egyedisegi kovetelmeny nem serult a gyakorlatban. A duplikatum a tortenetben marad (a git nem irhato at visszamenoleg), csak a kapu rc=1 dontesebol van kizarva."
+    },
+    {
+      "repoPathPattern": "QCassa\\.com/JokerQ$",
+      "buildNumber": "1012",
+      "commits": [
+        "646df5618949e55b3813b474b4cd87bec551135d",
+        "d9467748377d8f1bbf5c6f7f87da3243a024b24a"
+      ],
+      "card": "89d9b2e5",
+      "note": "A #1413/b4a612b9 (646df561, 2026-09-05 11:47) es egy 'Merge branch main into feat/ismockordevelopment-hivo-helyek' cimu merge-commit (d9467748, 11:30) UGYANABBOL az alapbol (szulo 55c74b3, ertek 1011) fuggetlenul adta ki mindketto az 1012-t -- a merge sajat erteke (1012) mindket szulojehez (965 es 1011) kepest valtozott, tehat nem egyszeru attetel, valodi masodik kiadas. VESZELYTELENSEG MERVE 2026-09-05: sem 1011, sem 1012, sem 1013 nem szerepel a store/devices.json telepitesi elozmenyeben (1010 utan a kovetkezo dokumentalt telepites 1014), 1012-es APK/enc a lemezen nincs, a docs/deployed-versions.md sem tartalmaz 1011/1012/1013 telepitesi sort -- egyik kodallapotbol sem kerult binaris a kezelohoz. A pendrive/FTP kifele meno ut fizikai eszkozt igenyelne, azt erre a gepre nem lehet leellenorizni; ha ott mégis van 1012-es kiadas, ez a bejegyzes felulvizsgalando."
     }
   ]
 }
