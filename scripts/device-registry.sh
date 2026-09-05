@@ -207,6 +207,19 @@ print(f'{hit["id"]} ({hit["model"]})')
 print(f'  projekt(ek): {", ".join(proj) if proj else "ISMERETLEN"}   [{hit["owner_source"]}]')
 print(f'  adat-politika: {hit["data_policy"]}')
 if hit.get("known_state"): print(f'  utolso mert allapot: {hit["known_state"]}')
+# hu: 🛑 A `current_required_config` AZ IRANYADO BUILD-ELoIRAS, KULON KIEMELVE. MERT ESET
+#     (kartya c758cf90): a mezo letezett a nyilvantartasban ("AE DEBUG, 2026-09-04-tol"), de a
+#     `check` a mezo nevet EGYSZER SEM olvasta -- csak a `warnings` tomb ment ki, es az egy MASIK,
+#     idokozben elavult sort hordozott ("AE Release"). A hivo ket ellentmondo forrast latott volna,
+#     ha egyaltalan latta volna mindkettot -- a valosagban csak az elavultat latta. Ha ez a mezo
+#     letezik, EZ a build-valtozat az iranyado, a warnings kozott allo barmilyen masik
+#     build-allitas MASODLAGOS es ELLENoRIZENDo ellene.
+# en: `current_required_config` is the AUTHORITATIVE build spec, called out separately. Measured
+#     case: the field existed but `check` never read it -- only `warnings` printed, and that array
+#     carried a DIFFERENT, since-stale line. If this field exists, it is the authoritative build
+#     variant; any other build claim inside `warnings` is secondary and must be checked against it.
+if hit.get("current_required_config"):
+    print(f'  \U0001f6d1 ERVENYES BUILD-ELoIRAS (current_required_config): {hit["current_required_config"]}')
 for w in hit.get("warnings",[]): print(f'  !! {w}')
 for pp in hit.get("protected_packages",[]):
     print(f'  !!!! VEDETT CSOMAG: {pp["package"]}'); print(f'       {pp["rule"]}'); bad=True
