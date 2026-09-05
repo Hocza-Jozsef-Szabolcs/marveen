@@ -542,6 +542,76 @@ else
 fi
 
 echo
+
+# ── T32-T35: DEKLARALT-DE-NEM-ILLO vs NINCS-DEKLARACIO megkulonboztetese (22372f05) ─────────────
+# Elo eset: a delphi fej (a fej_sajat_projektek()-ben korabban NEM szerepelt -- a `*)` uresen
+# hagyo agra esett) egy JokerQ-projektu delegalatlan kartyat kapott, mert a regi kod az URES
+# deklaraciot "nincs korlatozas"-kent olvasta. Ugyanez a kioszto a clicpu fejnel (VAN
+# deklaracioja) MEGFOGTA ugyanezt (lasd T23). A javitas utan a delphi MAR deklaralt (VHR/VHR5),
+# a "nincs deklaracio" agat egy MEG mindig deklaralatlan (a case-agban SEHOL nem szereplo) fej
+# fedi le, kulon uzenettel -- a hallgatas ettol kezdve NEM szamit engedelynek.
+FAgentsJsonDelphi='[{"name":"marveen","running":true},{"name":"delphi","running":true},{"name":"rendezo","running":true}]'
+FAgentsJsonKiserleti='[{"name":"marveen","running":true},{"name":"kiserleti-fej","running":true},{"name":"rendezo","running":true}]'
+
+echo "── T32: delphi NEM kaphat JokerQ-projektu delegalatlan kartyat (a MERT ESET, most mar deklaralt) ──"
+setup_case
+printf '%s' "$FAgentsJsonDelphi" > "$FTmp/agents.json"
+seed_card K-jokerq2 planned "" normal 0 "" JokerQ
+rc=$(run_script)
+check "T32 a JokerQ-kartyat delphi NEM probalta"           "0" "$(hivas_szam 'KIOSZTAS: K-jokerq2 delphi')"
+check "T32 az uzenet 'nem illik' (deklaralt, DE eltero), nem 'nincs deklaracio'" "1" \
+  "$(grep -c "a kartya projektje \[JokerQ\] nem illik a(z) delphi deklaralt szakteruletehez" "$FTmp/kimenet")"
+check "T32 kilepesi kod 0"                                 "0" "$rc"
+
+echo "── T33: delphi TOVABBRA IS megkapja a sajat (VHR5-projektu) delegalatlan kartyat ──"
+setup_case
+printf '%s' "$FAgentsJsonDelphi" > "$FTmp/agents.json"
+seed_card K-vhr5proj planned "" normal 0 "" VHR5
+rc=$(run_script)
+check "T33 a VHR5-projektu kartyat delphi kiosztotta" "1" "$(hivas_szam 'KIOSZTAS: K-vhr5proj delphi')"
+check "T33 kilepesi kod 0"                            "0" "$rc"
+
+echo "── T34: MEG DEKLARALATLAN fej (a case-agban SEHOL nem szerepel) NEM kap hatokorbe nem illo kartyat, KULON jelzessel ──"
+setup_case
+printf '%s' "$FAgentsJsonKiserleti" > "$FTmp/agents.json"
+seed_card K-jokerq3 planned "" normal 0 "" JokerQ
+rc=$(run_script)
+check "T34 a JokerQ-kartyat a deklaralatlan fej NEM probalta" "0" "$(hivas_szam 'KIOSZTAS: K-jokerq3 kiserleti-fej')"
+check "T34 az uzenet KULON jelzi a hianyzo deklaraciot (nem 'nem illik')" "1" \
+  "$(grep -c "kiserleti-fej fejnek NINCS deklaralt szakterulete" "$FTmp/kimenet")"
+check "T34 a 'nem illik' uzenet NEM jelenik meg (a ket eset nem keverendo)" "0" \
+  "$(grep -c "nem illik a(z) kiserleti-fej deklaralt szakteruletehez" "$FTmp/kimenet")"
+check "T34 kilepesi kod 0"                                     "0" "$rc"
+
+echo "── T35 (MUTACIO): a 'nincs deklaracio' ag (rc=2) visszavetele a REGI 'mindig illik'-re -> a T34 BUKJON vissza ──"
+# hu: A puszta ELTAVOLITAS NEM eleg mutacio: az `if/return 2/fi` blokk nelkul a fuggveny meg
+#     mindig `return 1`-re esne (a `for p in $engedett` egy URES valtozon nem fut le egyszer
+#     sem), tehat a kihagyas TOVABBRA IS blokkolna -- csak a rossz uzenettel. A hiteles mutacio
+#     a REGI sort allitja vissza (`[ -z "$engedett" ] && return 0`), pontosan azt a viselkedest
+#     reprodukalva, amit a kartya 22372f05 mert hibaja leirt.
+CMutans35="$FTmp/fej-idle-dispatch-mutans35.sh"
+python3 - "$CScript" "$CMutans35" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+needle = "  if [ -z \"$engedett\" ]; then\n    return 2\n  fi\n"
+old_form = "  [ -z \"$engedett\" ] && return 0\n"
+if needle in text:
+    open(dst, 'w').write(text.replace(needle, old_form, 1))
+PYEOF
+if [ ! -s "$CMutans35" ] || cmp -s "$CScript" "$CMutans35" 2>/dev/null; then
+  echo "  ⚠️  T35 elohivo minta nem talalt -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonKiserleti" > "$FTmp/agents.json"
+  seed_card K-jokerq3 planned "" normal 0 "" JokerQ
+  cp "$CMutans35" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T35 mutansnal a deklaralatlan fej IS megkapja a kartyat (a T34 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-jokerq3 kiserleti-fej')"
+fi
+
+echo
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo "  ✅ $FPass  ❌ $FFail"
 [ "$FFail" -eq 0 ] || exit 1

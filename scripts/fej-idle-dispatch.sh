@@ -16,26 +16,54 @@ cd "$(dirname "$0")/.."
 TOKEN=$(cat store/.dashboard-token)
 DB=store/claudeclaw.db
 
-# 🛑 A FEJ SAJAT, ZARTAN DEKLARALT SZAKTERULETE -- csak azok a fejek szerepelnek itt, akiknek a
-#    sajat agents/<fej>/CLAUDE.md-je EGY ZART, felsorolt repo-halmazt deklaral ("negy repo",
-#    "NEM a tied: X/Y/Z"). Ures visszateres = nincs korlatozas (a fej tobb projektet is szolgal).
+# 🛑 MINDEN FEJNEK LEGYEN ITT BEJEGYZESE (kartya 22372f05) -- ZART repo-halmaz, vagy a
+#    "OPEN" jelzo a SZANDEKOSAN tobb-projektes, skill-alapu fejekre (forras: a fej sajat
+#    dashboard-leirasa, "MINDEN X-hez/projekthez tartozol" alaku onmegfogalmazas). MERT
+#    ESET: a delphi itt NEM szerepelt (a `*)` agra esett), a regi kod az URES visszaterest
+#    "nincs korlatozas"-kent olvasta, es a delphi egy JokerQ-kartyat kapott -- pedig a
+#    sajat leirasa szerint "MINDEN Delphi-repohoz tartozol", ami a JokerQ-t (C#/.NET)
+#    kizarja. A `*)` ag mostantol a VALODI hianyt jelenti (egy jovoben felvett fejet,
+#    amit meg nem vezettek at ide) -- lasd fej_domain_illik.
 fej_sajat_projektek() {
   case "$1" in
-    backend) echo "Marveen" ;;
-    clicpu)  echo "CLI-CPU OctaCIL Obsivel Symphact" ;;
-    design)  echo "JokerQ QuantumAE" ;;
+    backend)  echo "Marveen" ;;
+    clicpu)   echo "CLI-CPU OctaCIL Obsivel Symphact" ;;
+    design)   echo "JokerQ QuantumAE QCassa" ;;
+    delphi)   echo "VHR VHR5" ;;
+    pascal)   echo "VHR VHR5" ;;
+    rendezo)  echo "VHR5" ;;
+    javacard) echo "BitIce QCassa" ;;
+    akka)     echo "OPEN" ;;
+    avalonia) echo "OPEN" ;;
+    ereceipt) echo "OPEN" ;;
+    kutato)   echo "OPEN" ;;
+    lms)      echo "OPEN" ;;
+    mag)      echo "OPEN" ;;
+    ordog)    echo "OPEN" ;;
+    sejt)     echo "OPEN" ;;
+    teszt)    echo "OPEN" ;;
+    vaszon)   echo "OPEN" ;;
     *) echo "" ;;
   esac
 }
 
-# hu: IGAZ (rc=0), ha a kartya projektje illik a fej deklaralt szakteruletehez, VAGY a fejnek
-#     nincs zart hatokore, VAGY a kartyan nincs projekt-cimke (nincs eleg jel a blokkolashoz).
+# hu: HAROM kimenet, NEM ketto -- ezt hivja a set -e alatt ALLTALAN, nem bare statementkent
+#     (lasd lejjebb, a `|| illik_rc=$?` minta):
+#       rc=0  a kartya illik (nyilt fej, VAGY deklaralt es egyezik, VAGY nincs projekt-cimke)
+#       rc=1  DEKLARALT fej, de a kartya projektje NEM egyezik -- "nem illik"
+#       rc=2  NINCS DEKLARACIO (a fej_sajat_projektek `*)` agara esett) -- kulon jelzendo, mert
+#             a hallgatas ADDIG engedelynek szamitott (kartya 22372f05); ez NEM ugyanaz, mint
+#             az 1-es eset, mert itt a hivonak MAST kell irnia a kimenetbe (hianyzo deklaracio,
+#             nem "nem illik").
 fej_domain_illik() {
   local fej="$1" projekt="$2"
   local engedett p
   engedett=$(fej_sajat_projektek "$fej")
-  [ -z "$engedett" ] && return 0
+  [ "$engedett" = "OPEN" ] && return 0
   [ -z "$projekt" ] && return 0
+  if [ -z "$engedett" ]; then
+    return 2
+  fi
   for p in $engedett; do
     [ "$p" = "$projekt" ] && return 0
   done
@@ -86,19 +114,26 @@ for fej in $idle; do
   kiosztva=0
   hatokor_kihagyva=0
   for card in $cards; do
-    # 🛑 SZAKTERULET-EGYEZTETES (72df44eb) -- CSAK a fallback-agon (delegalatlan/marveen-nevu
-    #    kartyan), ahol a SZKRIPT dont a cimzettrol. Mert eset: backend ketszer JokerQ/VHR temaju
-    #    delegalatlan kartyat kapott (2ad01092, a HANDOFF ket korabbi esete), clicpu Marveen-sajat
-    #    infra-javitast kapott (8cb34e1b) -- egyik sem illett a sajat CLAUDE.md-jukben ZARTAN
-    #    deklaralt szakteruletehez. A fej_sajat_projektek() csak azokat a fejeket sorolja fel,
-    #    akiknek a CLAUDE.md-je ZART repo-halmazt deklaral -- a skill-alapu, tobb-projektes
-    #    fejeknel (akka/avalonia/delphi/kutato/mag/ordog/sejt/teszt/vaszon/...) a hatokor
-    #    SZANDEKOSAN tobb projektre terjed ki, ott a projekt-mezo szerinti szures HAMIS BLOKKOT
-    #    adna, ezert azok a fuggvenyben uresen (= nincs korlatozas) maradnak.
+    # 🛑 SZAKTERULET-EGYEZTETES (72df44eb, szigoritva 22372f05) -- CSAK a fallback-agon
+    #    (delegalatlan/marveen-nevu kartyan), ahol a SZKRIPT dont a cimzettrol. Mert eset:
+    #    backend ketszer JokerQ/VHR temaju delegalatlan kartyat kapott (2ad01092), clicpu
+    #    Marveen-sajat infra-javitast kapott (8cb34e1b), delphi egy JokerQ-kartyat kapott
+    #    (harmadik elofordulas egy napon, 22372f05) -- egyik sem illett a fej szakteruletehez.
+    #    A fej_sajat_projektek() MINDEN fejre bejegyzest ad: "OPEN" a szandekosan
+    #    tobb-projektes, skill-alapu fejeknek, egy zart lista a repo-hoz kotott fejeknek. A
+    #    `*)` ag (URES visszateres) mostantol a VALODI hianyt jelenti -- egy jovoben felvett,
+    #    ide meg at nem vezetett fejet --, es fej_domain_illik ezt KULON kilepesi kodon (2)
+    #    jelzi: a hallgatas TOBBE NEM szamit engedelynek.
     if [ "$fallback" = "1" ]; then
       projekt=$(sqlite3 "$DB" "select project from kanban_cards where id='$card';")
-      if ! fej_domain_illik "$fej" "$projekt"; then
+      illik_rc=0
+      fej_domain_illik "$fej" "$projekt" || illik_rc=$?
+      if [ "$illik_rc" = "1" ]; then
         echo "KIHAGYVA: $fej -> $card -- a kartya projektje [$projekt] nem illik a(z) $fej deklaralt szakteruletehez"
+        hatokor_kihagyva=1
+        continue
+      elif [ "$illik_rc" = "2" ]; then
+        echo "KIHAGYVA: $fej -> $card -- a(z) $fej fejnek NINCS deklaralt szakterulete a fej_sajat_projektek()-ben (kartya projektje: [$projekt]) -- a kiosztas kezi ellenorzest igenyel, add fel a fej deklaraciojat, mielott automatikusan kiosztod"
         hatokor_kihagyva=1
         continue
       fi
