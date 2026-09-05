@@ -140,17 +140,41 @@ fej_nyelv_illik() {
 #          "blokkol" szotovet tartalmazo soron), ES az a kartya mar 'done'
 #    A fuggveny CSAK JELEZ (echo) -- a waiting -> planned atallitas dontes, nem meres, ezt
 #    nem vegzi el.
+#
+# 🛑 HAT HAMIS POZITIV EGY NAP ALATT (kartya 79480150, 5419. komment) -- a kozos tanulsag: "egy
+#    kartya, ami a MERESROL szol, szuksegszeruen tartalmazza a meres kulcsszavait. Amig a
+#    detektor a kartya SZOVEGEBOL kovetkeztet allapotra, ezt nem lehet szo-listaval kizarni --
+#    se szukitessel, se bovitessel." Ezert HAROM fuggetlen vedelem van (nem egy negyedik
+#    szolista-bovites):
+#      (a) MECHANIZMUS NEVERE szurunk, nem az altalanos "kvota"/"plafon" szora -- a JavaCard/
+#          BitIce szakterulet nyelven mindketto MAST jelent (APDU-keret, szamitasi plafon,
+#          ertek-plafon), es ez homonima-hamis-pozitivot adott (83f02b0c, c8e7c7f4).
+#      (b) AZ UTOLSO KOMMENT AZ IRANYADO, HA VAN -- a leiras a kartya EREDETI/tortenti
+#          allapotat rogziti, az utolso komment a JELENLEGIT; ha az utolso komment NEM
+#          erositi meg a leirasban talalt mechanizmus-jelet, a jelzest kihagyjuk (c8e7c7f4:
+#          az utolso komment MAS blokkolot -- gazda-dontest -- nevezett meg).
+#      (c) ONHIVATKOZAS-VEDELEM -- ha a leiras a SAJAT kartya ID-jet idezi, a kartya
+#          ON-DOKUMENTALO/META (a mechanizmusrol ir, nem egy valos varakozasrol allit) --
+#          ez sult el a 79480150 kartyan onmagan.
 waiting_blokkolo_jelzes() {
-  local fej="$1" wcard wleiras kvota_kimenet candidate cstatus
+  local fej="$1" wcard wleiras wkomment kvota_kimenet candidate cstatus
   local waiting_cards
   waiting_cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='waiting' and archived_at is null;")
   for wcard in $waiting_cards; do
     wleiras=$(sqlite3 "$DB" "select description from kanban_cards where id='$wcard';")
 
-    if echo "$wleiras" | grep -qiE 'kv[óo]ta|plafon'; then
-      kvota_kimenet=$(bash scripts/quota-gate.sh 2>/dev/null | head -1)
-      if [ "$kvota_kimenet" = "fut" ]; then
-        echo "JELZES: $fej -- a(z) $wcard waiting kartya kvota-/plafon-varakozast mond, de a quota-gate 'fut'-ot ad -- ELLENORIZD, lehet hogy planned-re kell allitani"
+    if echo "$wleiras" | grep -qF "$wcard"; then
+      continue
+    fi
+
+    wkomment=$(sqlite3 "$DB" "select content from kanban_comments where card_id='$wcard' order by created_at desc, id desc limit 1;")
+
+    if echo "$wleiras" | grep -qiE 'quota-gate|kv[óo]ta-fagyaszt|keret-plafon|FAGYASZTVA|quota-freeze'; then
+      if [ -z "$wkomment" ] || echo "$wkomment" | grep -qiE 'quota-gate|kv[óo]ta-fagyaszt|keret-plafon|FAGYASZTVA|quota-freeze'; then
+        kvota_kimenet=$(bash scripts/quota-gate.sh 2>/dev/null | head -1)
+        if [ "$kvota_kimenet" = "fut" ]; then
+          echo "JELZES: $fej -- a(z) $wcard waiting kartya kvota-/plafon-varakozast mond, de a quota-gate 'fut'-ot ad -- ELLENORIZD, lehet hogy planned-re kell allitani"
+        fi
       fi
     fi
 
@@ -330,7 +354,14 @@ for fej in $idle; do
       leiras_sajat="$leiras"
     fi
     shopt -u nocasematch
-    if echo "$leiras_sajat" | grep -qiE "MEGOLDVA:|TARGYTALAN|KESZ ES COMMITOLVA|LEZARVA"; then
+    # 🛑 "TARGYTALAN" ONMAGABAN TUL ALTALANOS SZO (kartya 79480150, 5. hamis pozitiv, fe2d2a70):
+    #    "...a jel TARGYTALAN -- a fej nem amnezias, hanem epp most indult." -- itt a szo egy
+    #    MASIK mechanizmus JELEROL szol, nem a SAJAT kartya allapotarol, es a puszta szo-egyezes
+    #    ezt nem kulonbozteti meg (T9: "TARGYTALAN -- lezarva ..." VALODI lezaras marad). A
+    #    "TARGYTALAN" csak akkor szamit zaro-jelnek, ha KOZVETLEN kozelben (nem tavoli mondatban)
+    #    lezarasra utalo szo all -- a [[:space:]-] kozott csak elvalaszto (szokoz/kotojel) allhat,
+    #    egy koztes SZO mar kizarja az illeszkedest.
+    if echo "$leiras_sajat" | grep -qiE "MEGOLDVA:|KESZ ES COMMITOLVA|LEZARVA|TARGYTALAN[[:space:]-]{0,20}(lezar|kesz|befejez|done)"; then
       echo "GYANUS: $fej -> $card mar keszen allhat (a leirasban lezaro jelzo all) -- ELLENORIZD"
       continue
     fi

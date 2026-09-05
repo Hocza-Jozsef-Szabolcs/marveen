@@ -67,6 +67,13 @@ CREATE TABLE kanban_cards (
   parent_id TEXT,
   dispatched_at INTEGER
 );
+CREATE TABLE kanban_comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id TEXT NOT NULL,
+  author TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 SQLEOF
 
   # A kiosztas-mock: naplozza a hivast, es kilepesi kodot ad. A kod forrasa elsobbseggel:
@@ -117,6 +124,14 @@ seed_card() {
   local id="$1" status="$2" assignee="$3" priority="${4:-normal}" created_at="${5:-0}" description="${6:-}" project="${7:-}" title="${8:-Teszt}"
   sqlite3 "$FTmp/root/store/claudeclaw.db" \
     "insert into kanban_cards (id,title,description,status,assignee,priority,created_at,updated_at,project) values ('$id','$title','$description','$status',nullif('$assignee',''),'$priority',$created_at,0,nullif('$project',''));"
+}
+
+# hu: egy kommentet szur be a kartyahoz -- a "waiting_blokkolo_jelzes" az UTOLSO kommentet nezi,
+#     tehat a created_at sorrend szamit tobb kommentes esetben.
+seed_comment() {
+  local card_id="$1" content="$2" created_at="${3:-0}" author="${4:-teszt}"
+  sqlite3 "$FTmp/root/store/claudeclaw.db" \
+    "insert into kanban_comments (card_id,author,content,created_at) values ('$card_id','$author','$content',$created_at);"
 }
 
 # hu: a futo fejek listaja -- delphi ABECEBEN design es ereceipt ELOTT all, ahogy elesben is.
@@ -639,7 +654,7 @@ echo "── T36: waiting kartya kvota-/plafon-varakozast mond, a quota-gate FUT
 setup_case
 printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
 echo "fut" > "$FTmp/quota-gate-kimenet"
-seed_card K-backend-waiting-kvota waiting backend high 0 "MERT TENY: kvota-/plafon-varakozas all fenn, a keret meg nem szabadult fel."
+seed_card K-backend-waiting-kvota waiting backend high 0 "MERT TENY: a quota-gate kvota-/plafon-varakozast mond, a keret meg nem szabadult fel."
 seed_card K-backend-planned      planned backend normal 1 "Sima nyitott feladat."
 rc=$(run_script)
 check "T36 JELZES a kimenetben"                     "1" "$(grep -c 'JELZES' "$FTmp/kimenet")"
@@ -653,7 +668,7 @@ echo "── T37: waiting kartya kvota-/plafon-varakozast mond, DE a quota-gate 
 setup_case
 printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
 echo "FAGYASZTVA" > "$FTmp/quota-gate-kimenet"
-seed_card K-backend-waiting-kvota2 waiting backend high 0 "MERT TENY: kvota-/plafon-varakozas all fenn, a keret meg nem szabadult fel."
+seed_card K-backend-waiting-kvota2 waiting backend high 0 "MERT TENY: a quota-gate kvota-/plafon-varakozast mond, a keret meg nem szabadult fel."
 rc=$(run_script)
 check "T37 NINCS JELZES, amig a quota-gate FAGYASZTVA-t ad" "0" "$(grep -c 'K-backend-waiting-kvota2' "$FTmp/kimenet")"
 check "T37 kilepesi kod 0"                                   "0" "$rc"
@@ -688,10 +703,12 @@ python3 - "$CScript" "$CMutans40" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src, encoding='utf-8').read()
-old = '''    if echo "$wleiras" | grep -qiE 'kv[óo]ta|plafon'; then
-      kvota_kimenet=$(bash scripts/quota-gate.sh 2>/dev/null | head -1)
-      if [ "$kvota_kimenet" = "fut" ]; then
-        echo "JELZES: $fej -- a(z) $wcard waiting kartya kvota-/plafon-varakozast mond, de a quota-gate 'fut'-ot ad -- ELLENORIZD, lehet hogy planned-re kell allitani"
+old = '''    if echo "$wleiras" | grep -qiE 'quota-gate|kv[óo]ta-fagyaszt|keret-plafon|FAGYASZTVA|quota-freeze'; then
+      if [ -z "$wkomment" ] || echo "$wkomment" | grep -qiE 'quota-gate|kv[óo]ta-fagyaszt|keret-plafon|FAGYASZTVA|quota-freeze'; then
+        kvota_kimenet=$(bash scripts/quota-gate.sh 2>/dev/null | head -1)
+        if [ "$kvota_kimenet" = "fut" ]; then
+          echo "JELZES: $fej -- a(z) $wcard waiting kartya kvota-/plafon-varakozast mond, de a quota-gate 'fut'-ot ad -- ELLENORIZD, lehet hogy planned-re kell allitani"
+        fi
       fi
     fi
 
@@ -705,7 +722,7 @@ else
   setup_case
   printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
   echo "fut" > "$FTmp/quota-gate-kimenet"
-  seed_card K-backend-waiting-kvota waiting backend high 0 "MERT TENY: kvota-/plafon-varakozas all fenn, a keret meg nem szabadult fel."
+  seed_card K-backend-waiting-kvota waiting backend high 0 "MERT TENY: a quota-gate kvota-/plafon-varakozast mond, a keret meg nem szabadult fel."
   seed_card K-backend-planned      planned backend normal 1 "Sima nyitott feladat."
   cp "$CMutans40" "$FTmp/root/scripts/fej-idle-dispatch.sh"
   chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
@@ -973,6 +990,191 @@ else
   rc=$(run_script)
   check "T56 mutansnal a koordinacios kartya IS kiosztva (a T53 visszajon)" "1" \
     "$(( $(hivas_szam 'KIOSZTAS: K-marveen-koord delphi') + $(hivas_szam 'KIOSZTAS: K-marveen-koord design') + $(hivas_szam 'KIOSZTAS: K-marveen-koord ereceipt') ))"
+fi
+
+echo
+
+# ── T57-T66: a kvota-/plafon-jelzes ES a lezaro-jelzo HAMIS POZITIVJAI (79480150) ────────────────
+# Elo esetek (2026-09-05, 79480150 kartya kommentjei): a b677d74-es javitas utan HAT hamis
+# pozitiv allt elo egy nap alatt, ket kulon detektorban:
+#   1-2. a kvota-jelzo a "keret"/"plafon" SZOT keresi, ami a JavaCard/BitIce szakterulet
+#        nyelven MAST jelent (APDU-keret, szamitasi plafon) -- homonima.
+#   3.   a kvota-jelzo helyesen talal mechanizmus-szot a leirasban, DE a kartya UTOLSO
+#        KOMMENTJE mar MAS blokkolot nevez meg -- a komment felulirja a leirast.
+#   4.   a kvota-jelzo ONMAGARA (a 79480150 kartyara) sul el, mert a kartya A MECHANIZMUSROL
+#        szol, tehat szuksegszeruen tartalmazza a mechanizmus kulcsszavait -- meta-kartya.
+#   5.   a LEZARO-jelzo detektor (a "GYANUS" ag) egy MASIK meta-kartyan (fe2d2a70) sul el:
+#        "...a jel TARGYTALAN -- a fej nem amnezias..." -- a "targytalan" szo itt egy MASIK
+#        mechanizmus JELEROL szol, nem a SAJAT kartya allapotarol.
+# A kozos tanulsag (79480150, 5419. komment): "egy kartya, ami a MERESROL szol, szuksegszeruen
+# tartalmazza a meres kulcsszavait. Amig a detektor a kartya SZOVEGEBOL kovetkeztet allapotra,
+# ezt nem lehet szo-listaval kizarni -- se szukitessel, se bovitessel." A javitas iranya ezert
+# HAROM fuggetlen vedelem, NEM egy negyedik szolista-bovites:
+#   (a) mechanizmus NEVERE szurunk (quota-gate/FAGYASZTVA/kvota-fagyasztas/keret-plafon/
+#       quota-freeze), nem az altalanos "kvota"/"plafon" szora,
+#   (b) az UTOLSO KOMMENT az iranyado, ha van -- felulirja a leirast,
+#   (c) ONHIVATKOZAS-vedelem -- ha a leiras a SAJAT kartya ID-jet idezi, meta-kartya, kihagyjuk.
+# A lezaro-jelzonel a "targytalan" szo TUL ALTALANOS onmagaban (ld. T9: "TARGYTALAN --
+# lezarva ..." VALODI lezaras) -- csak akkor szamit jelnek, ha kozvetlen kozelben (nem tavoli
+# mondatban) lezarasra utalo szo all.
+FAgentsJsonBackendSolo2='[{"name":"marveen","running":true},{"name":"backend","running":true},{"name":"rendezo","running":true}]'
+
+echo "── T57: kvota-jelzo HOMONIMA -- 'PLAFON' szo APDU-technikai kontextusban -> NINCS jelzes ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo2" > "$FTmp/agents.json"
+echo "fut" > "$FTmp/quota-gate-kimenet"
+seed_card K-backend-waiting-homonima1 waiting backend high 0 "5. PLAFON: a puszta hash-ido 2^H * 133 * 2,44 ms, azaz H=10-re 6 perc, H=15-re 3,0 ora."
+rc=$(run_script)
+check "T57 NINCS jelzes a homonima 'PLAFON' szora"      "0" "$(grep -c 'K-backend-waiting-homonima1' "$FTmp/kimenet")"
+check "T57 kilepesi kod 0"                              "0" "$rc"
+
+echo "── T58: kvota-jelzo HOMONIMA -- 'PLAFON' szo kulcsgeneralasi kontextusban -> NINCS jelzes ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo2" > "$FTmp/agents.json"
+echo "fut" > "$FTmp/quota-gate-kimenet"
+seed_card K-backend-waiting-homonima2 waiting backend high 0 "A kulcs-generalas PLAFONJA a kartyan 2^H * 133 * 2,44 ms, H=15-re 3,0 ora tiszta hash-ido."
+rc=$(run_script)
+check "T58 NINCS jelzes a homonima 'PLAFON' szora (masik kontextus)" "0" "$(grep -c 'K-backend-waiting-homonima2' "$FTmp/kimenet")"
+check "T58 kilepesi kod 0"                                           "0" "$rc"
+
+echo "── T59: kvota-jelzo helyes mechanizmus-szoval, DE az utolso komment MAS blokkolot mond -> NINCS jelzes ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo2" > "$FTmp/agents.json"
+echo "fut" > "$FTmp/quota-gate-kimenet"
+seed_card K-backend-waiting-komment waiting backend high 0 "MERT TENY: kvota-/plafon-varakozas all fenn -- a quota-gate FAGYASZTVA allapotot ad, a keret meg nem szabadult fel."
+seed_comment K-backend-waiting-komment "Jozsi: a dontesek nem most szuletnek meg, mas okbol var." 5
+rc=$(run_script)
+check "T59 NINCS jelzes, ha az utolso komment mas blokkolot mond" "0" "$(grep -c 'K-backend-waiting-komment' "$FTmp/kimenet")"
+check "T59 kilepesi kod 0"                                        "0" "$rc"
+
+echo "── T60: kvota-jelzo ONHIVATKOZAS -- a kartya a SAJAT ID-jet idezi (meta-kartya) -> NINCS jelzes ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo2" > "$FTmp/agents.json"
+echo "fut" > "$FTmp/quota-gate-kimenet"
+seed_card K-backend-waiting-meta waiting backend high 0 "A javitas ket gepiesen merheto alakra jelez (kartya K-backend-waiting-meta): kvota-/plafon-varakozas all fenn, a quota-gate FAGYASZTVA allapotot ad."
+rc=$(run_script)
+check "T60 NINCS jelzes az onhivatkozo meta-kartyara" "0" "$(grep -c 'K-backend-waiting-meta' "$FTmp/kimenet")"
+check "T60 kilepesi kod 0"                            "0" "$rc"
+
+echo "── T61 (MUTACIO): a mechanizmus-nevre szures visszaallitasa az altalanos 'kvota|plafon' mintara -> a T57 BUKJON vissza ──"
+CMutans61="$FTmp/fej-idle-dispatch-mutans61.sh"
+python3 - "$CScript" "$CMutans61" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+old = "grep -qiE 'quota-gate|kv[óo]ta-fagyaszt|keret-plafon|FAGYASZTVA|quota-freeze'"
+new = "grep -qiE 'kv[óo]ta|plafon'"
+if old in text:
+    open(dst, 'w', encoding='utf-8').write(text.replace(old, new))
+PYEOF
+if [ ! -s "$CMutans61" ] || cmp -s "$CScript" "$CMutans61" 2>/dev/null; then
+  echo "  ⚠️  T61 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonBackendSolo2" > "$FTmp/agents.json"
+  echo "fut" > "$FTmp/quota-gate-kimenet"
+  seed_card K-backend-waiting-homonima1 waiting backend high 0 "5. PLAFON: a puszta hash-ido 2^H * 133 * 2,44 ms, azaz H=10-re 6 perc, H=15-re 3,0 ora."
+  cp "$CMutans61" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T61 mutansnal VISSZAJON a homonima hamis jelzes (a T57 bukik)" "1" "$(grep -c 'K-backend-waiting-homonima1' "$FTmp/kimenet")"
+fi
+
+echo "── T62 (MUTACIO): az utolso-komment-ellenorzes kivetele -> a T59 BUKJON vissza ──"
+CMutans62="$FTmp/fej-idle-dispatch-mutans62.sh"
+python3 - "$CScript" "$CMutans62" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+old = '''      if [ -z "$wkomment" ] || echo "$wkomment" | grep -qiE 'quota-gate|kv[óo]ta-fagyaszt|keret-plafon|FAGYASZTVA|quota-freeze'; then
+        kvota_kimenet=$(bash scripts/quota-gate.sh 2>/dev/null | head -1)
+        if [ "$kvota_kimenet" = "fut" ]; then
+          echo "JELZES: $fej -- a(z) $wcard waiting kartya kvota-/plafon-varakozast mond, de a quota-gate 'fut'-ot ad -- ELLENORIZD, lehet hogy planned-re kell allitani"
+        fi
+      fi'''
+new = '''      kvota_kimenet=$(bash scripts/quota-gate.sh 2>/dev/null | head -1)
+      if [ "$kvota_kimenet" = "fut" ]; then
+        echo "JELZES: $fej -- a(z) $wcard waiting kartya kvota-/plafon-varakozast mond, de a quota-gate 'fut'-ot ad -- ELLENORIZD, lehet hogy planned-re kell allitani"
+      fi'''
+if old in text:
+    open(dst, 'w', encoding='utf-8').write(text.replace(old, new, 1))
+PYEOF
+if [ ! -s "$CMutans62" ] || cmp -s "$CScript" "$CMutans62" 2>/dev/null; then
+  echo "  ⚠️  T62 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonBackendSolo2" > "$FTmp/agents.json"
+  echo "fut" > "$FTmp/quota-gate-kimenet"
+  seed_card K-backend-waiting-komment waiting backend high 0 "MERT TENY: kvota-/plafon-varakozas all fenn -- a quota-gate FAGYASZTVA allapotot ad, a keret meg nem szabadult fel."
+  seed_comment K-backend-waiting-komment "Jozsi: a dontesek nem most szuletnek meg, mas okbol var." 5
+  cp "$CMutans62" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T62 mutansnal VISSZAJON a jelzes az utolso komment ellenere (a T59 bukik)" "1" "$(grep -c 'K-backend-waiting-komment' "$FTmp/kimenet")"
+fi
+
+echo "── T63 (MUTACIO): az onhivatkozas-vedelem kivetele -> a T60 BUKJON vissza ──"
+CMutans63="$FTmp/fej-idle-dispatch-mutans63.sh"
+python3 - "$CScript" "$CMutans63" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+old = '''    if echo "$wleiras" | grep -qF "$wcard"; then
+      continue
+    fi
+
+'''
+if old in text:
+    open(dst, 'w', encoding='utf-8').write(text.replace(old, '', 1))
+PYEOF
+if [ ! -s "$CMutans63" ] || cmp -s "$CScript" "$CMutans63" 2>/dev/null; then
+  echo "  ⚠️  T63 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonBackendSolo2" > "$FTmp/agents.json"
+  echo "fut" > "$FTmp/quota-gate-kimenet"
+  seed_card K-backend-waiting-meta waiting backend high 0 "A javitas ket gepiesen merheto alakra jelez (kartya K-backend-waiting-meta): kvota-/plafon-varakozas all fenn, a quota-gate FAGYASZTVA allapotot ad."
+  cp "$CMutans63" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T63 mutansnal VISSZAJON az onhivatkozo meta-kartya hamis jelzese (a T60 bukik)" "1" "$(grep -c 'K-backend-waiting-meta' "$FTmp/kimenet")"
+fi
+
+echo
+
+echo "── T64: lezaro-jelzo -- 'TARGYTALAN' szo egy MASIK mechanizmus JELEROL szolo mondatban -> NINCS GYANUS ──"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-1 planned delphi urgent 0 "MIT KELL TENNI: ha a kiosztas frissebb egy kuszobnel, a jel targytalan -- a fej nem amnezias, hanem epp most indult.
+
+ELFOGADASI FELTETEL: a figyelo NEM jelez friss ablak eseten."
+rc=$(run_script)
+check "T64 NINCS GYANUS jelzes a masik mechanizmus jelerol szolo mondatra" "0" "$(grep -c 'GYANUS' "$FTmp/kimenet")"
+check "T64 a kartya IGEN kiosztva"                                        "1" "$(hivas_szam 'KIOSZTAS: K-delphi-1 delphi')"
+
+echo "── T65 (MUTACIO): a 'TARGYTALAN'-szukites visszaallitasa az onmagaban allo mintara -> a T64 BUKJON vissza ──"
+CMutans65="$FTmp/fej-idle-dispatch-mutans65.sh"
+python3 - "$CScript" "$CMutans65" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+old = '''MEGOLDVA:|KESZ ES COMMITOLVA|LEZARVA|TARGYTALAN[[:space:]-]{0,20}(lezar|kesz|befejez|done)'''
+new = '''MEGOLDVA:|TARGYTALAN|KESZ ES COMMITOLVA|LEZARVA'''
+if old in text:
+    open(dst, 'w', encoding='utf-8').write(text.replace(old, new, 1))
+PYEOF
+if [ ! -s "$CMutans65" ] || cmp -s "$CScript" "$CMutans65" 2>/dev/null; then
+  echo "  ⚠️  T65 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+  seed_card K-delphi-1 planned delphi urgent 0 "MIT KELL TENNI: ha a kiosztas frissebb egy kuszobnel, a jel targytalan -- a fej nem amnezias, hanem epp most indult.
+
+ELFOGADASI FELTETEL: a figyelo NEM jelez friss ablak eseten."
+  cp "$CMutans65" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T65 mutansnal VISSZAJON a hamis GYANUS jelzes (a T64 bukik)" "1" "$(grep -c 'GYANUS' "$FTmp/kimenet")"
 fi
 
 echo
