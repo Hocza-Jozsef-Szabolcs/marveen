@@ -113,6 +113,51 @@ REPO_TO_STATE_KEY = {
 }
 
 
+# hu: ISMERT, FUTASIDOBEN VALTOZO FAJLOK -- ZARO UJSOR TURESE (kartya e399227a, 2026-09-05).
+#     Repo-gyokerhez kepest RELATIV utvonal. A JokerQ mockoon/Factory/JokerQ-Factory.json-t a FUTO
+#     Mockoon app irja felul futas kozben, es a felulirasnal olykor elhagyja a fajl zaro ujsorat --
+#     ez NEM tartalmi valtozas, csak a Mockoon sajat szerializaloja ir mas alakban, mint ahogy a
+#     repoban all. Ket egymast koveto ALLJ MEG ugyanezert az egy fajlert MINDEN fej telepitesi
+#     kapujat megallitotta, holott a tartalom valtozatlan volt.
+#     A LISTA SZANDEKOSAN SZUK: csak azert kerul ide egy fajl, mert egy MASIK, futo folyamat (nem a
+#     hivo) irja at a munkafan, es a felulirasa BIZONYITOTTAN csak a szerializacio alakjat
+#     valtoztatja -- nem a tartalmat. A tures pontos hatarat lasd `_is_trailing_newline_only_diff`.
+# en: KNOWN, RUNTIME-MUTATED FILES -- TRAILING-NEWLINE TOLERANCE (card e399227a, 2026-09-05).
+#     Repo-root-relative path. The running Mockoon app rewrites JokerQ's
+#     mockoon/Factory/JokerQ-Factory.json while it runs, and the rewrite sometimes drops the file's
+#     trailing newline -- not a content change, just Mockoon's own serializer writing a different
+#     form than what sits in the repo. Two consecutive STOPs over the exact same file halted every
+#     head's install gate although the content was unchanged.
+NEWLINE_TOLERANT_PATHS = {
+    "mockoon/Factory/JokerQ-Factory.json",
+}
+
+
+def _is_trailing_newline_only_diff(repo, relpath):
+    """hu: True <=> a relpath MUNKAFA-beli tartalma a HEAD-beli valtozattol KIZAROLAG a zaro ujsor
+    jelenleteben/hianyaban ter el -- minden mas byte azonos. False minden mas esetben, BELEERTVE,
+    ha a fajl nem all HEAD-ben vagy nem olvashato a munkafan (fail-closed: ilyenkor a hivo a
+    PISZKOS jelzest tartja meg).
+    en: True iff relpath's worktree content differs from its HEAD content ONLY in the presence or
+    absence of a trailing newline -- every other byte is identical. False in every other case,
+    INCLUDING when the file is absent from HEAD or unreadable in the worktree (fail-closed: the
+    caller keeps the DIRTY signal in that case).
+    """
+    head = git(repo, "show", "HEAD:%s" % relpath)
+    if head.returncode != 0:
+        return False
+    try:
+        with open(os.path.join(repo, relpath), "r", encoding="utf-8", newline="") as f:
+            work = f.read()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    def _strip_one_trailing_newline(s):
+        return s[:-1] if s.endswith("\n") else s
+
+    return _strip_one_trailing_newline(head.stdout) == _strip_one_trailing_newline(work)
+
+
 def _compare_repo_build_state(say, repos, state):
     """hu: a state JSON-t a repok MOSTANI HEAD/dirty allapotaaval hasonlitja. True, ha baj van."""
     bad = False
@@ -258,8 +303,27 @@ def main(argv):
         else:
             st = git(r, "status", "--porcelain")
 
-        dirty = [l for l in st.stdout.splitlines() if l.strip()]
+        dirty_raw = [l for l in st.stdout.splitlines() if l.strip()]
         br = git(r, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "(ismeretlen)"
+
+        # hu: ZARO UJSOR TURESE -- csak a NEVESITETT, futasidoben valtozo fajlokra (lasd
+        #     NEWLINE_TOLERANT_PATHS), es csak akkor, ha (1) a porcelain-sor TISZTAN modositas
+        #     ("M", nem uj/torolt/atnevezett -- azoknal nincs HEAD-beli parja, amihez viszonyitani),
+        #     ES (2) a tartalom byte-ra egyezik a HEAD-del, miutan mindket oldalrol egyetlen zaro
+        #     ujsort levontunk. Minden MAS eltérés -- masik fajl, vagy ugyanezen a fajlon tartalmi
+        #     valtozas -- TOVABBRA IS PISZKOS bejegyzeskent szamit (lasd _is_trailing_newline_only_diff).
+        dirty, tolerated = [], []
+        for l in dirty_raw:
+            status, path = l[:2], l[3:]
+            if (path in NEWLINE_TOLERANT_PATHS and "M" in status and set(status) <= {"M", " "}
+                    and _is_trailing_newline_only_diff(r, path)):
+                tolerated.append(path)
+                continue
+            dirty.append(l)
+        for path in tolerated:
+            say("  MUNKAFA: ISMERT UJSOR-ELTERES ELNEZVE -- %s: %s CSAK a zaro ujsorban ter el a" % (name, path))
+            say("      HEAD-tol (egy futo folyamat irja felul futas kozben, kartya e399227a).")
+            say("      A tartalom valtozatlan -- ez NEM szamit PISZKOS bejegyzesnek.")
 
         if dirty:
             say("  MUNKAFA: PISZKOS -- %s: %d eltero bejegyzes a HEAD-hez kepest. Hatokor: %s"

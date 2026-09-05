@@ -626,6 +626,69 @@ run_case "Q2 --require-apk ES --apk EGYUTT -> ugyanaz, mint sima --apk (V1)" 0 "
 run_case "Q3 V3 megismetelve --require-apk NELKUL -> valtozatlanul MEHET (munkafa-ellenorzes)" 0 "APK: NEM MERVE" \
     check TESZT-ESZKOZ --repo "$REPO"
 
+# ================================================================================================
+# hu: ISMERT, FUTASIDOBEN VALTOZO FAJL -- ZARO UJSOR TURESE (kartya e399227a, 2026-09-05).
+#     A JokerQ mockoon/Factory/JokerQ-Factory.json-t a FUTO Mockoon app irja felul futas kozben,
+#     es a felulirasnal olykor elhagyja a fajl zaro ujsorat -- ez NEM tartalmi valtozas, csak a
+#     Mockoon sajat szerializaloja ir mas alakban, mint ahogy a repoban all. Ket egymast koveto
+#     ALLJ MEG ugyanezert az egy fajlert MINDEN fej telepitesi kapujat megallitotta, holott a
+#     tartalom valtozatlan volt.
+#     AZ ELFOGADASI FELTETEL KET FELE: (a) az ismert fajl CSAK-ujsor elterese MEHET-et ad, (b)
+#     minden MAS eltérés -- ugyanazon a fajlon tartalmi valtozas, VAGY egy MASIK fajlon ugyanolyan
+#     ujsor-eltéres -- TOVABBRA IS PISZKOS marad. A (b) fals-pozitiv iranyu esetek NELKUL a (a)
+#     onmagaban nem bizonyitja, hogy a tures SZUK.
+# ================================================================================================
+NL_PATH="mockoon/Factory/JokerQ-Factory.json"
+
+make_repo
+mkdir -p "$REPO/mockoon/Factory"
+printf '{\n  "a": 1\n}\n' > "$REPO/$NL_PATH"
+git -C "$REPO" add -A
+git -C "$REPO" -c user.email=t@t -c user.name=t commit -qm mockoon
+run_case "NL0 pozitiv kontroll: az ismert fajl commitolva, munkafa valtozatlan -> MEHET" 0 "MUNKAFA: tiszta" \
+    check TESZT-ESZKOZ --repo "$REPO"
+
+# hu: A FUTO Mockoon app elhagyja a zaro ujsort -- CSAK ez ter el a HEAD-tol.
+printf '{\n  "a": 1\n}' > "$REPO/$NL_PATH"
+run_case "NL1 ismert fajl, CSAK a zaro ujsor hianyzik -> MEHET (turt eltérés)" 0 "ISMERT UJSOR-ELTERES ELNEZVE" \
+    check TESZT-ESZKOZ --repo "$REPO"
+
+# hu: A FORDITOTT IRANY IS all -- HEAD ujsor NELKUL, munkafan ujsorral.
+make_repo
+mkdir -p "$REPO/mockoon/Factory"
+printf '{\n  "a": 1\n}' > "$REPO/$NL_PATH"
+git -C "$REPO" add -A
+git -C "$REPO" -c user.email=t@t -c user.name=t commit -qm mockoon-no-nl
+printf '{\n  "a": 1\n}\n' > "$REPO/$NL_PATH"
+run_case "NL2 forditott irany: HEAD ujsor NELKUL, munkafan ujsorral -> MEHET" 0 "ISMERT UJSOR-ELTERES ELNEZVE" \
+    check TESZT-ESZKOZ --repo "$REPO"
+
+# hu: FALS POZITIV IRANY (1): UGYANAZON a fajlon VALODI TARTALOM-valtozas -- ez NEM tures, TOVABBRA
+#     is PISZKOS. Az elfogadasi feltetel masik fele: a valodi eltérést a kapu tovabbra is elkapja.
+make_repo
+mkdir -p "$REPO/mockoon/Factory"
+printf '{\n  "a": 1\n}\n' > "$REPO/$NL_PATH"
+git -C "$REPO" add -A
+git -C "$REPO" -c user.email=t@t -c user.name=t commit -qm mockoon
+printf '{\n  "a": 2\n}\n' > "$REPO/$NL_PATH"
+run_case "NL3 ismert fajl, VALODI tartalom-valtozas -> TOVABBRA IS PISZKOS" 1 "MUNKAFA: PISZKOS" \
+    check TESZT-ESZKOZ --repo "$REPO"
+
+# hu: FALS POZITIV IRANY (2): MASIK, NEM ismert fajl UGYANOLYAN zaro-ujsor-elteresevel -- a tures
+#     SZUK, csak a NEVESITETT fajlra all, nem minden fajlra.
+make_repo
+printf 'eredeti' > "$REPO/Proj/App.cs"
+run_case "NL4 MASIK fajl, ugyanolyan zaro-ujsor-eltéres -> TOVABBRA IS PISZKOS (a tures csak a nevesitett fajlra all)" 1 "MUNKAFA: PISZKOS" \
+    check TESZT-ESZKOZ --repo "$REPO"
+
+# hu: FALS POZITIV IRANY (3): az ismert fajl MEG NEM commitolt (uj, nyomon nem kovetett) -- a tures
+#     csak MEGLEVO tartalom modositasara all, ujonnan hozzaadott fajlra nem (nincs mihez viszonyitani).
+make_repo
+mkdir -p "$REPO/mockoon/Factory"
+printf '{\n  "a": 1\n}' > "$REPO/$NL_PATH"
+run_case "NL5 az ismert fajl MEG NEM commitolt (uj, nyomon nem kovetett) -> PISZKOS" 1 "MUNKAFA: PISZKOS" \
+    check TESZT-ESZKOZ --repo "$REPO"
+
 echo
 echo "osszesen: $((PASS + FAIL)) eset, PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -gt 0 ]; then
