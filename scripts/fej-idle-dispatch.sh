@@ -70,6 +70,39 @@ fej_domain_illik() {
   return 1
 }
 
+# 🛑 VALASZTAS ELOTT: a fej WAITING kartyai kozott lehet olyan, aminek a blokkoloja MAR NEM
+#    all -- ezt a valasztas (a "cards=" lekerdezes lent) SOHA nem latja, mert csak
+#    status='planned'-ot nez, es a waiting -> planned visszaallitas nincs automatizalva
+#    (kartya 79480150). KET gepiesen merheto alak van, csak azokra jelzunk -- a tobbi (kulso
+#    valasz, gazda-dontes, eszkoz) NEM merheto:
+#      (a) a leiras kvota-/plafon-varakozast mond, ES a quota-gate 'fut'-ot ad
+#      (b) a leiras egy MASIK kartyara hivatkozik blokkolokent (8 hex karakteres ID a
+#          "blokkol" szotovet tartalmazo soron), ES az a kartya mar 'done'
+#    A fuggveny CSAK JELEZ (echo) -- a waiting -> planned atallitas dontes, nem meres, ezt
+#    nem vegzi el.
+waiting_blokkolo_jelzes() {
+  local fej="$1" wcard wleiras kvota_kimenet candidate cstatus
+  local waiting_cards
+  waiting_cards=$(sqlite3 "$DB" "select id from kanban_cards where assignee='$fej' and status='waiting' and archived_at is null;")
+  for wcard in $waiting_cards; do
+    wleiras=$(sqlite3 "$DB" "select description from kanban_cards where id='$wcard';")
+
+    if echo "$wleiras" | grep -qiE 'kv[óo]ta|plafon'; then
+      kvota_kimenet=$(bash scripts/quota-gate.sh 2>/dev/null | head -1)
+      if [ "$kvota_kimenet" = "fut" ]; then
+        echo "JELZES: $fej -- a(z) $wcard waiting kartya kvota-/plafon-varakozast mond, de a quota-gate 'fut'-ot ad -- ELLENORIZD, lehet hogy planned-re kell allitani"
+      fi
+    fi
+
+    for candidate in $(echo "$wleiras" | grep -iE 'blokkol' | grep -oE '[0-9a-f]{8}' | grep -v "^${wcard}\$" | sort -u); do
+      cstatus=$(sqlite3 "$DB" "select status from kanban_cards where id='$candidate' and archived_at is null;")
+      if [ "$cstatus" = "done" ]; then
+        echo "JELZES: $fej -- a(z) $wcard waiting kartya a(z) $candidate kartyara hivatkozik blokkolokent, de az mar 'done' -- ELLENORIZD, lehet hogy planned-re kell allitani"
+      fi
+    done
+  done
+}
+
 running=$(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/agents \
   | python3 -c "import json,sys
 for a in json.load(sys.stdin):
@@ -86,6 +119,8 @@ if [ -z "$idle" ]; then
 fi
 
 for fej in $idle; do
+  waiting_blokkolo_jelzes "$fej"
+
   # A VHR-kapacitas-korlatozast Jozsi megszuntette (2026-08-25, Telegram: "A korlatozast regen
   # eltoroltem!") -- a VHR-projektu planned kartyak mostantol ugyanugy kioszthatok, mint barmely
   # mas kartya. A korabbi kizaro szures (project='VHR' vagy cim/leiras VHR-emlites) itt megszunt.

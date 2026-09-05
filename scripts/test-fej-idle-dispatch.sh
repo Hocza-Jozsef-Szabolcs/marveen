@@ -94,6 +94,20 @@ exit "$FKod"
 MOCKEOF
   chmod +x "$FTmp/root/scripts/kartya-kiosztas.sh"
 
+  # A kvota-kapu mock: a kimenetet egy vezerlo-fajlbol olvassa. Alapertelmezetten "FAGYASZTVA",
+  # hogy a regi tesztek (egyikuk sem allit be waiting kartyat) erintetlenek maradjanak -- a mock
+  # meg sem hivodik meg naluk.
+  cat > "$FTmp/root/scripts/quota-gate.sh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ -f "$MOCK_DIR/quota-gate-kimenet" ]; then
+  cat "$MOCK_DIR/quota-gate-kimenet"
+else
+  echo "FAGYASZTVA"
+fi
+MOCKEOF
+  chmod +x "$FTmp/root/scripts/quota-gate.sh"
+  rm -f "$FTmp/quota-gate-kimenet"
+
   rm -rf "$FTmp/kilepokod"
   mkdir -p "$FTmp/kilepokod"
   : > "$FTmp/hivasok"
@@ -609,6 +623,124 @@ else
   chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
   rc=$(run_script)
   check "T35 mutansnal a deklaralatlan fej IS megkapja a kartyat (a T34 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-jokerq3 kiserleti-fej')"
+fi
+
+echo
+
+# ── T36-T41: a fej WAITING kartyai kozott a feloldodott blokkolo JELZESE (79480150) ─────────────
+# Elo eset (2026-09-05 16:46): a backend fejnek a bf0c6ecc kartyat osztotta ki (priority=normal)
+# a kioszto, mikozben HAROM `high` kartyaja allt `waiting`-ben, es az egyiknek a blokkoloja
+# (kvota-/keret-plafon-varakozas) mar megszunt. A kioszto a `status='planned'`-ot nezte, a
+# `waiting`-et sosem -- a javitas KET gepiesen merheto alakra JELEZ (nem allit statuszt), a
+# valasztas (a `cards=` lekerdezes) ELOTT.
+FAgentsJsonBackendSolo='[{"name":"marveen","running":true},{"name":"backend","running":true},{"name":"rendezo","running":true}]'
+
+echo "── T36: waiting kartya kvota-/plafon-varakozast mond, a quota-gate FUT -> JELZES, a tobbi kartya kiosztasa valtozatlan ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+echo "fut" > "$FTmp/quota-gate-kimenet"
+seed_card K-backend-waiting-kvota waiting backend high 0 "MERT TENY: kvota-/plafon-varakozas all fenn, a keret meg nem szabadult fel."
+seed_card K-backend-planned      planned backend normal 1 "Sima nyitott feladat."
+rc=$(run_script)
+check "T36 JELZES a kimenetben"                     "1" "$(grep -c 'JELZES' "$FTmp/kimenet")"
+check "T36 a JELZES a helyes kartyat nevezi meg"    "1" "$(grep -c 'K-backend-waiting-kvota' "$FTmp/kimenet")"
+check "T36 a masik kartya meg is kiosztasra kerult" "1" "$(hivas_szam 'KIOSZTAS: K-backend-planned backend')"
+check "T36 a waiting kartya statusza valtozatlan (waiting)" "waiting" \
+  "$(sqlite3 "$FTmp/root/store/claudeclaw.db" "select status from kanban_cards where id='K-backend-waiting-kvota';")"
+check "T36 kilepesi kod 0"                          "0" "$rc"
+
+echo "── T37: waiting kartya kvota-/plafon-varakozast mond, DE a quota-gate MEG FAGYASZTVA -> NINCS jelzes (hamis pozitiv kizarva) ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+echo "FAGYASZTVA" > "$FTmp/quota-gate-kimenet"
+seed_card K-backend-waiting-kvota2 waiting backend high 0 "MERT TENY: kvota-/plafon-varakozas all fenn, a keret meg nem szabadult fel."
+rc=$(run_script)
+check "T37 NINCS JELZES, amig a quota-gate FAGYASZTVA-t ad" "0" "$(grep -c 'K-backend-waiting-kvota2' "$FTmp/kimenet")"
+check "T37 kilepesi kod 0"                                   "0" "$rc"
+
+echo "── T38: waiting kartya blokkolokent egy MASIK kartyara hivatkozik, az MAR done -> JELZES, a tobbi kartya kiosztasa valtozatlan ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+seed_card deadbeef done "" normal 0 "Regen lezart segedkartya."
+seed_card K-backend-waiting-blk waiting backend high 1 "MERT TENY: BLOKKOLO: deadbeef -- meg mindig waiting, pedig a blokkolo kartya mar kesz."
+seed_card K-backend-planned2    planned backend normal 2 "Sima nyitott feladat 2."
+rc=$(run_script)
+check "T38 JELZES a kimenetben"                     "1" "$(grep -c 'JELZES' "$FTmp/kimenet")"
+check "T38 a JELZES a helyes kartyat nevezi meg"    "1" "$(grep -c 'K-backend-waiting-blk' "$FTmp/kimenet")"
+check "T38 a JELZES a blokkolo kartyat is nevezi"   "1" "$(grep -c 'deadbeef' "$FTmp/kimenet")"
+check "T38 a masik kartya meg is kiosztasra kerult" "1" "$(hivas_szam 'KIOSZTAS: K-backend-planned2 backend')"
+check "T38 a waiting kartya statusza valtozatlan (waiting)" "waiting" \
+  "$(sqlite3 "$FTmp/root/store/claudeclaw.db" "select status from kanban_cards where id='K-backend-waiting-blk';")"
+check "T38 kilepesi kod 0"                          "0" "$rc"
+
+echo "── T39: waiting kartya blokkolokent egy MASIK kartyara hivatkozik, AZ MEG NEM done -> NINCS jelzes (hamis pozitiv kizarva) ──"
+setup_case
+printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+seed_card deadbee2 in_progress "" normal 0 "Meg folyamatban."
+seed_card K-backend-waiting-blk2 waiting backend high 1 "MERT TENY: BLOKKOLO: deadbee2 -- meg dolgoznak rajta."
+rc=$(run_script)
+check "T39 NINCS JELZES, amig a blokkolo kartya nem done" "0" "$(grep -c 'K-backend-waiting-blk2' "$FTmp/kimenet")"
+check "T39 kilepesi kod 0"                                 "0" "$rc"
+
+echo "── T40 (MUTACIO): a kvota-/plafon-jelzes ag eltavolitasa -> a T36 BUKJON vissza ────"
+CMutans40="$FTmp/fej-idle-dispatch-mutans40.sh"
+python3 - "$CScript" "$CMutans40" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+old = '''    if echo "$wleiras" | grep -qiE 'kv[óo]ta|plafon'; then
+      kvota_kimenet=$(bash scripts/quota-gate.sh 2>/dev/null | head -1)
+      if [ "$kvota_kimenet" = "fut" ]; then
+        echo "JELZES: $fej -- a(z) $wcard waiting kartya kvota-/plafon-varakozast mond, de a quota-gate 'fut'-ot ad -- ELLENORIZD, lehet hogy planned-re kell allitani"
+      fi
+    fi
+
+'''
+if old in text:
+    open(dst, 'w', encoding='utf-8').write(text.replace(old, '', 1))
+PYEOF
+if [ ! -s "$CMutans40" ] || cmp -s "$CScript" "$CMutans40" 2>/dev/null; then
+  echo "  ⚠️  T40 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+  echo "fut" > "$FTmp/quota-gate-kimenet"
+  seed_card K-backend-waiting-kvota waiting backend high 0 "MERT TENY: kvota-/plafon-varakozas all fenn, a keret meg nem szabadult fel."
+  seed_card K-backend-planned      planned backend normal 1 "Sima nyitott feladat."
+  cp "$CMutans40" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T40 mutansnal NINCS JELZES (a T36 visszajon)" "0" "$(grep -c 'JELZES' "$FTmp/kimenet")"
+fi
+
+echo "── T41 (MUTACIO): a blokkolo-kartya-hivatkozas jelzes ag eltavolitasa -> a T38 BUKJON vissza ─"
+CMutans41="$FTmp/fej-idle-dispatch-mutans41.sh"
+python3 - "$CScript" "$CMutans41" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+old = '''    for candidate in $(echo "$wleiras" | grep -iE 'blokkol' | grep -oE '[0-9a-f]{8}' | grep -v "^${wcard}\\$" | sort -u); do
+      cstatus=$(sqlite3 "$DB" "select status from kanban_cards where id='$candidate' and archived_at is null;")
+      if [ "$cstatus" = "done" ]; then
+        echo "JELZES: $fej -- a(z) $wcard waiting kartya a(z) $candidate kartyara hivatkozik blokkolokent, de az mar 'done' -- ELLENORIZD, lehet hogy planned-re kell allitani"
+      fi
+    done
+'''
+if old in text:
+    open(dst, 'w', encoding='utf-8').write(text.replace(old, '', 1))
+PYEOF
+if [ ! -s "$CMutans41" ] || cmp -s "$CScript" "$CMutans41" 2>/dev/null; then
+  echo "  ⚠️  T41 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJsonBackendSolo" > "$FTmp/agents.json"
+  seed_card deadbeef done "" normal 0 "Regen lezart segedkartya."
+  seed_card K-backend-waiting-blk waiting backend high 1 "MERT TENY: BLOKKOLO: deadbeef -- meg mindig waiting, pedig a blokkolo kartya mar kesz."
+  seed_card K-backend-planned2    planned backend normal 2 "Sima nyitott feladat 2."
+  cp "$CMutans41" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T41 mutansnal NINCS JELZES (a T38 visszajon)" "0" "$(grep -c 'JELZES' "$FTmp/kimenet")"
 fi
 
 echo
