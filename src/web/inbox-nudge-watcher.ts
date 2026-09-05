@@ -49,7 +49,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { getPendingMessages } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost } from './agent-process.js'
+import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost, type SendPromptResult } from './agent-process.js'
 import { sendAlert } from './channel-monitor.js'
 
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
@@ -242,7 +242,7 @@ async function tick(): Promise<void> {
 
     const prev = state
     state = recordNudge(state, now, oldest.id)
-    let result: 'sent' | 'aborted-busy' | 'skipped-locked'
+    let result: SendPromptResult
     try {
       result = await sendPromptToSession(MAIN_CHANNELS_SESSION, nudgeText(resolveLang()), null, {
         onBusyTimeout: 'abort',
@@ -257,13 +257,14 @@ async function tick(): Promise<void> {
       logger.warn({ err, pending: pending.length }, 'inbox nudge: send threw; nothing typed, state restored')
       return
     }
-    if (result === 'aborted-busy' || result === 'skipped-locked') {
-      // Nothing was typed: either the pane turned busy in the check->send gap
-      // (aborted-busy), or a delivery held the per-pane lock (skipped-locked --
+    if (result === 'aborted-busy' || result === 'skipped-locked' || result === 'parked') {
+      // Nothing was SUBMITTED: either the pane turned busy in the check->send
+      // gap (aborted-busy), a delivery held the per-pane lock (skipped-locked --
       // this is a deliver-mode call so it fails open rather than skipping, but
-      // handle it for completeness). Undo the debounce so the cadence retries.
+      // handle it for completeness), or the nudge parked in the input box and
+      // never submitted (parked). Undo the debounce so the cadence retries.
       state = prev
-      logger.info({ inboxNudgeSkipped: result, pending: pending.length }, 'inbox nudge: nothing typed before send; skipped')
+      logger.info({ inboxNudgeSkipped: result, pending: pending.length }, 'inbox nudge: nothing submitted before send; skipped')
       return
     }
     logger.info(

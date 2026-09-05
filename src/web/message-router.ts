@@ -25,6 +25,7 @@ import {
   sendPromptToSession,
   sessionExistsOnHost,
   capturePane,
+  type SendPromptResult,
 } from './agent-process.js'
 import { detectPaneState, detectsPermissionPrompt, permissionPromptSummary, type PaneState, type PermissionPromptSummary } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
@@ -66,6 +67,19 @@ const MAX_INJECT_FAILURES = 3
  */
 export function shouldGiveUpOnInject(failCount: number, maxFailures: number): boolean {
   return failCount >= maxFailures
+}
+
+/**
+ * Pure decision: did this send actually put a submittable prompt in the pane?
+ *
+ * Only 'sent' into a still-alive session counts. 'parked' is the honest
+ * give-up (sendPromptToSession typed the text but the submit-retry loop still
+ * found it parked, so the agent never acts on it); a session that died between
+ * the pre-pass check and the end of the chunk stream also lost the prompt.
+ * Anything but `sendResult === 'sent' && sessionAlive` must NOT mark delivered.
+ */
+export function isConfirmedDelivery(sendResult: SendPromptResult, sessionAlive: boolean): boolean {
+  return sendResult === 'sent' && sessionAlive
 }
 
 /**
@@ -718,7 +732,16 @@ export async function runMessageRouterTick(): Promise<void> {
         const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note)
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        await sendPromptToSession(session, prefix + wrapped, host)
+        const sendResult = await sendPromptToSession(session, prefix + wrapped, host)
+        const sessionAliveAfterSend = sessionExistsOnHost(host, session)
+        if (!isConfirmedDelivery(sendResult, sessionAliveAfterSend)) {
+          // The prompt did not reliably land in the pane (parked after the
+          // submit-retry budget, or the session died mid-send). Route through
+          // the inject-fail path below (retry across ticks, then
+          // markMessageFailed + notifyOrchestratorOfFailedHandoff) instead of
+          // silently marking "delivered".
+          throw new Error(`sendPromptToSession not confirmed: ${sendResult} (session alive after send: ${sessionAliveAfterSend})`)
+        }
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }

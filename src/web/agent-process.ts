@@ -1959,12 +1959,19 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
 // still reports stuck, send up to SUBMIT_RETRY_MAX_ATTEMPTS extra
 // Enters. The retry budget bounds the loop so a pathologically stuck
 // pane gives up rather than spinning.
+
+// Result of a prompt-injection attempt. 'parked' is the honest give-up: the
+// text was typed but never submitted (still sitting in the input box), so the
+// agent never acts on it. Callers that mark a message 'delivered' must treat
+// anything but 'sent' as NOT delivered.
+export type SendPromptResult = 'sent' | 'aborted-busy' | 'skipped-locked' | 'parked'
+
 export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
   opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode } = {},
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
+): Promise<SendPromptResult> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
   // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
@@ -2034,7 +2041,7 @@ export async function sendPromptToSession(
   // is the per-session critical section. Held under a per-pane in-process mutex
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
-  const emitToPane = async (): Promise<'sent'> => {
+  const emitToPane = async (): Promise<'sent' | 'parked'> => {
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
   // prove the buffer is clean, but proceeding without the clear is no
@@ -2106,8 +2113,8 @@ export async function sendPromptToSession(
     const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
     if (action === 'done') break
     if (action === 'give-up') {
-      logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries')
-      break
+      logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries; reporting parked (not delivered)')
+      return 'parked'
     }
     if (action === 'clear-and-resend') {
       // Placeholder confirmed in the pane (box non-empty, not busy), so the
@@ -2159,7 +2166,7 @@ export async function sendPromptToSession(
     // is visible rather than silently degrading into re-interleaving.
     logger.warn({ session }, 'sendPromptToSession: delivery lock wait budget elapsed; sent WITHOUT the per-pane lock (fail-open) -- a holder may be wedged')
   }
-  return 'sent'
+  return lockResult.value ?? 'sent'
 }
 
 // How long to wait between the two capture samples when the first one
