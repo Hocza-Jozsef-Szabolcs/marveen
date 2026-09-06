@@ -13,6 +13,13 @@
 #   kozotti osszevetes -- STRUKTURALT jel (idobelyeg), nem szoveg-egyezes a komment tartalmara
 #   (merve 2026-08-14: activity-snapshot-hamis-pozitiv-szandekos-leallas-20260814).
 #
+# 🛑 A "form:" SOROK NEM "uj"-kent kezelt fejek -- az ELOZO snapshot-fajlban a soruk MAR
+#   letezett, de NEM hatmezos (a store formatumot valtott azota, hogy a sor irodott). Ha ezt
+#   csendben "uj: nincs elozo meres"-kent kezelnenk, MINDEN fej ALL:/var: dontese elmaradna
+#   ugyanabban a korben, es a kimenet egy legitim elso futastol lathatatlanul kulonbozne
+#   (merve 2026-08-24: az `activity-snapshot-hamis-pozitiv-szandekos-leallas-20260814` kartya
+#   fuggetlen atmeresenel, ordog).
+#
 # MIERT LETEZIK (merve 2026-08-14 00:2x):
 #   Az `akka` a cleartext-jelentese vegen kiirta, hogy "Visszaallok a 0ab6e3d2-re" -- es a kor
 #   OTT VEGET ERT. NEGYVEN PERCIG allt ures prompton, 202 030 tokennel VALTOZATLANUL, mikozben a
@@ -102,11 +109,20 @@ import os
 
 prev_file = os.environ["AGENT_PREV"]
 prev = {}
+malformed = set()
 try:
     for s in open(prev_file):
         r = s.split()
+        if not r:
+            continue
         if len(r) == 6:
             prev[r[0]] = r
+        else:
+            # 🛑 REGI/ISMERETLEN FORMATUMU SOR -- ez NEM "nincs elozo meres" (uj), hanem a
+            #   store formatumot valtott. Csendben "uj"-kent kezelve MINDEN fej ALL:/var:
+            #   dontese elmarad ugyanabban a korben, es a kimenet egy legitim elso futastol
+            #   lathatatlanul kulonbozik (merve 2026-08-24, ordog fuggetlen atmerese).
+            malformed.add(r[0])
 except FileNotFoundError:
     pass
 
@@ -122,7 +138,10 @@ for s in open(os.environ["AGENT_NEW"]):
     nev, ctx, nyitott, ures, statuszok, komment_ido = r
     p = prev.get(nev)
     if not p:
-        print(f"  uj    {nev}: nincs elozo meres")
+        if nev not in malformed:
+            print(f"  uj    {nev}: nincs elozo meres")
+        else:
+            print(f"  form: {nev}: elozo meres regi/ismeretlen formatumu -- ALL:/var: dontes nem allapithato meg")
         continue
     if ctx == p[1] and ures == "1" and nyitott not in ("0", "?"):
         try:

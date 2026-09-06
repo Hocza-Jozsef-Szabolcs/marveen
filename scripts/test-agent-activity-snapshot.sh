@@ -106,6 +106,44 @@ else
     "$(grep -qE '^ *ALL: *wait1' "$FTmp/t4.out" && echo 1 || echo 0)"
 fi
 
+echo "── T5 (formatum-valtas): a PREV fajlban regi/nem-hatmezos sor -> NEM csendes 'uj' ─────"
+# hu: a store/agent-activity-snapshot.txt-nek MAR VOLT negymezos formatuma (2026-08-24), a
+#     `if len(r) == 6` csendben eldobja az ilyen sort a prev-szotarbol -- a fej ugy nez ki,
+#     mintha meg sose merte volna senki, es SOHA nem kap ALL:/var: dontest ugyanabban a korben,
+#     amikor a store formatumot valt. A hiba NEM VESZI ESZRE MAGAT: egy legitim elso futastol
+#     lathatatlanul kulonbozik (ordog fuggetlen atmerese, activity-snapshot-hamis-pozitiv-
+#     szandekos-leallas-20260814 kartya, 2026-08-24 23:15).
+FPrevOld="$FTmp/prev-oldformat.txt"
+cat > "$FPrevOld" <<EOF
+oldformat1 100000 0 1
+EOF
+epoch_set "$FPrevOld" "$PREV_MTIME"
+FNew="$FTmp/new-t5.txt"
+cat > "$FNew" <<EOF
+oldformat1 100000 1 1 in_progress 0
+EOF
+"$CScript" --diff-only "$FPrevOld" "$FNew" >"$FTmp/t5.out" 2>&1
+check "T5 NEM 'uj' jelzes oldformat1-re" "0" \
+  "$(grep -qE '^ *uj *oldformat1' "$FTmp/t5.out" && echo 1 || echo 0)"
+check "T5 kulon formatum-jelzes szerepel oldformat1-re" "1" \
+  "$(grep -qE '^ *form: *oldformat1' "$FTmp/t5.out" && echo 1 || echo 0)"
+
+echo "── T6 (MUTACIO): a formatum-eszrevetel kivetele -> a T5 BUKJON vissza ─────────────────"
+CMutans2="$FTmp/agent-activity-snapshot-mutans2.sh"
+awk '
+  /if nev not in malformed:/ { print "        if True:"; next }
+  { print }
+' "$CScript" > "$CMutans2"
+chmod +x "$CMutans2"
+if cmp -s "$CScript" "$CMutans2"; then
+  echo "  ❌ T6 a mutacio NEM valtoztatott a szkripten -- a minta elavult, a T6 vak"
+  FFail=$((FFail + 1))
+else
+  "$CMutans2" --diff-only "$FPrevOld" "$FNew" >"$FTmp/t6.out" 2>&1
+  check "T6 a mutansnal oldformat1 TEVESEN 'uj'-t kap" "1" \
+    "$(grep -qE '^ *uj *oldformat1' "$FTmp/t6.out" && echo 1 || echo 0)"
+fi
+
 echo
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo "  ✅ $FPass  ❌ $FFail"
