@@ -20,6 +20,32 @@ vi.mock('../notify.js', () => ({
   notifySecurityEvent: vi.fn(async () => {}),
 }))
 
+// Real hashPassword/verifyPassword run scrypt at N=2^16 (~64 MiB, CPU/memory-hard
+// by design -- password-hash.ts:27-35). This suite's lockout test drives SIX
+// sequential real KDF calls (seedUser + 5 wrong-password attempts, below):
+// ~850ms in isolation, but under full-suite CPU/memory contention (other worker
+// files hashing concurrently, e.g. password-hash.test.ts) it can exceed vitest's
+// 5000ms test timeout -- reproduced under artificial load with the exact same
+// "Test timed out in 5000ms" failure reported against the unmocked code. login-
+// throttle.ts imports the same module, so this also speeds up its runDummyVerify
+// path used by the "bad user" case below. The KDF's own correctness stays
+// covered, unmocked, by password-hash.test.ts; this suite only needs a stable
+// pass/fail signal for the route/throttle logic.
+vi.mock('../web/password-hash.js', async (importOriginal) => {
+  // Explicit annotation (not inferred): assertPasswordPolicy is an assertion
+  // signature (asserts pw is string), and TS2775 refuses to call one through
+  // a member access whose object type isn't spelled out.
+  const actual: typeof import('../web/password-hash.js') = await importOriginal()
+  return {
+    ...actual,
+    hashPassword: async (pw: string) => {
+      actual.assertPasswordPolicy(pw)
+      return `$test$${pw}`
+    },
+    verifyPassword: async (pw: string, phc: string) => phc === `$test$${pw}`,
+  }
+})
+
 
 interface MockRes {
   statusCode: number
