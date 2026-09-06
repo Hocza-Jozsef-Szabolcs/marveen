@@ -36,11 +36,24 @@ describe('main agent project-level settings.json hook commands', () => {
     expect(unsafe).toEqual([])
   })
 
-  it('every scripts/hooks/*.py command resolves to a script that exists on disk right now', () => {
+  it('every scripts/hooks/*.py command resolves to a script that exists in this checkout', () => {
+    // Hook commands hardcode the canonical install's absolute path
+    // (/Users/ceo/Marveen/... -- see the marveen-hook-path-safety skill:
+    // intentional, a sub-agent resolves $CLAUDE_PROJECT_DIR to its OWN
+    // directory, not the fleet root) rather than a $CLAUDE_PROJECT_DIR-
+    // relative one. Resolving that hardcoded prefix as-is checks a fixed,
+    // external machine location, not the checkout under test -- a worktree
+    // that renames or drops its own scripts/hooks/*.py file still passed
+    // here as long as the unrelated /Users/ceo/Marveen copy was intact
+    // (verified: moving scripts/hooks/ledger-capture.py aside in a worktree
+    // left this test green). Resolve the hook's own basename against THIS
+    // checkout's PROJECT_ROOT instead, so the test verifies the branch
+    // under test, matching hook-path-guard.test.ts's ROOT-relative
+    // convention rather than trusting a shared external location.
     for (const c of allCommands) {
-      const m = c.match(/\/[^\s"']+\/scripts\/hooks\/[^\s"']+\.py/)
+      const m = c.match(/scripts\/hooks\/([^\s"'/]+\.py)/)
       if (!m) continue
-      const resolved = m[0].replace('$CLAUDE_PROJECT_DIR', PROJECT_ROOT)
+      const resolved = join(PROJECT_ROOT, 'scripts', 'hooks', m[1])
       expect({ command: c, path: resolved, exists: existsSync(resolved) })
         .toEqual({ command: c, path: resolved, exists: true })
     }
