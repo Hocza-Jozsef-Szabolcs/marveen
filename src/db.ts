@@ -412,6 +412,61 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
 
+  // Migration: kanban_card_events gains event_type/old_title/new_title, and
+  // to_status becomes nullable, so a TITLE change can share the same table
+  // as a status change (#211 -- the card's own audit trail was silent on
+  // title overwrites, only status transitions were ever recorded). Plain
+  // ADD COLUMN covers the three new columns; relaxing to_status's NOT NULL
+  // needs a rebuild, since SQLite cannot ALTER a column constraint.
+  //
+  // The pre-existing status trigger is dropped before the rebuild and
+  // recreated after (below): SQLite's ALTER TABLE ... RENAME re-validates
+  // every trigger that references the table by name, and at the instant of
+  // the rename the target name doesn't exist yet -- with the old trigger
+  // still around, the rename itself fails with "no such table:
+  // kanban_card_events", even though the rename is what would create it.
+  db.exec(`DROP TRIGGER IF EXISTS kanban_cards_status_audit`)
+  try {
+    db.exec("ALTER TABLE kanban_card_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'status'")
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE kanban_card_events ADD COLUMN old_title TEXT')
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE kanban_card_events ADD COLUMN new_title TEXT')
+  } catch {
+    // column already exists
+  }
+  try {
+    const ceSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='kanban_card_events'").get() as { sql: string } | undefined
+    if (ceSchema?.sql && ceSchema.sql.includes('to_status TEXT NOT NULL')) {
+      db.exec(`
+        CREATE TABLE kanban_card_events_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          card_id TEXT NOT NULL,
+          event_type TEXT NOT NULL DEFAULT 'status',
+          from_status TEXT,
+          to_status TEXT,
+          old_title TEXT,
+          new_title TEXT,
+          actor TEXT,
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO kanban_card_events_new (id, card_id, event_type, from_status, to_status, old_title, new_title, actor, created_at)
+          SELECT id, card_id, event_type, from_status, to_status, old_title, new_title, actor, created_at FROM kanban_card_events;
+        DROP TABLE kanban_card_events;
+        ALTER TABLE kanban_card_events_new RENAME TO kanban_card_events;
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+    }
+  } catch (err) {
+    logger.warn({ err }, 'kanban_card_events to_status-nullable migration failed -- continuing')
+  }
+
   // Status-change audit is a DB-level trigger, not application code, so a
   // status write CANNOT bypass it -- moveKanbanCard, updateKanbanCard, and
   // any raw SQL UPDATE against kanban_cards all fire the same trigger
@@ -436,13 +491,33 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`INSERT OR IGNORE INTO kanban_audit_actor_ctx (id, actor) VALUES (1, NULL)`)
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS kanban_cards_status_audit
+    CREATE TRIGGER kanban_cards_status_audit
     AFTER UPDATE OF status ON kanban_cards
     WHEN OLD.status <> NEW.status
     BEGIN
-      INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at)
+      INSERT INTO kanban_card_events (card_id, event_type, from_status, to_status, actor, created_at)
       VALUES (
-        NEW.id, OLD.status, NEW.status,
+        NEW.id, 'status', OLD.status, NEW.status,
+        (SELECT actor FROM kanban_audit_actor_ctx WHERE id = 1),
+        CAST(strftime('%s', 'now') AS INTEGER)
+      );
+    END
+  `)
+
+  // Title-change audit: the same shared table, a second DB-level trigger --
+  // for the identical bypass-proofing reason as the status trigger above
+  // (a raw SQL UPDATE of title must not go unrecorded either).
+  // updateKanbanCard is the only entry point that ever changes title, and it
+  // already hands the actor through kanban_audit_actor_ctx for the status
+  // trigger, so this trigger reuses the same context row.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_cards_title_audit
+    AFTER UPDATE OF title ON kanban_cards
+    WHEN OLD.title <> NEW.title
+    BEGIN
+      INSERT INTO kanban_card_events (card_id, event_type, old_title, new_title, actor, created_at)
+      VALUES (
+        NEW.id, 'title', OLD.title, NEW.title,
         (SELECT actor FROM kanban_audit_actor_ctx WHERE id = 1),
         CAST(strftime('%s', 'now') AS INTEGER)
       );
@@ -1912,14 +1987,58 @@ export function getKanbanComments(cardId: string): KanbanComment[] {
 export interface KanbanCardEvent {
   id: number
   card_id: string
+  event_type: 'status' | 'title'
   from_status: string | null
-  to_status: string
+  to_status: string | null
+  old_title: string | null
+  new_title: string | null
   actor: string | null
   created_at: number
 }
 
 export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
   return db.prepare('SELECT * FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardEvent[]
+}
+
+// Fleet-backup restore path for kanban_card_events (see fleet-transfer.ts).
+// A backup carries both status-change and title-change rows; event_type
+// tells them apart, and each kind is deduped on its own natural key so a
+// repeated import of the same backup never doubles an event. event_type
+// defaults to 'status' so pre-#211 exports (written before this column
+// existed) still import correctly.
+export function importKanbanCardEvent(ev: {
+  card_id: string
+  event_type?: 'status' | 'title'
+  from_status?: string | null
+  to_status?: string | null
+  old_title?: string | null
+  new_title?: string | null
+  actor?: string | null
+  created_at: number
+}): void {
+  if (!ev.card_id) return
+  const eventType = ev.event_type ?? 'status'
+
+  if (eventType === 'status') {
+    if (!ev.to_status) return
+    const exists = db.prepare(
+      'SELECT 1 FROM kanban_card_events WHERE card_id = ? AND created_at = ? AND event_type = ? AND to_status = ?'
+    ).get(ev.card_id, ev.created_at, 'status', ev.to_status)
+    if (exists) return
+    db.prepare(
+      'INSERT INTO kanban_card_events (card_id, event_type, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(ev.card_id, 'status', ev.from_status ?? null, ev.to_status, ev.actor ?? null, ev.created_at)
+    return
+  }
+
+  if (!ev.new_title) return
+  const exists = db.prepare(
+    'SELECT 1 FROM kanban_card_events WHERE card_id = ? AND created_at = ? AND event_type = ? AND new_title = ?'
+  ).get(ev.card_id, ev.created_at, 'title', ev.new_title)
+  if (exists) return
+  db.prepare(
+    'INSERT INTO kanban_card_events (card_id, event_type, old_title, new_title, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(ev.card_id, 'title', ev.old_title ?? null, ev.new_title, ev.actor ?? null, ev.created_at)
 }
 
 // Lookup a kanban card's `seq` (its sqlite rowid) by the 8-char hex id stored

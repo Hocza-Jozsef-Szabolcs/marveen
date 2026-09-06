@@ -22,7 +22,7 @@ import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
-import { getDb, backfillEmbeddings } from '../db.js'
+import { getDb, backfillEmbeddings, importKanbanCardEvent } from '../db.js'
 import { logger } from '../logger.js'
 
 // ---------------------------------------------------------------------------
@@ -1122,15 +1122,11 @@ export function importFleet(
         }
       }
 
-      // kanban card events -- idempotent on (card_id, created_at, to_status)
+      // kanban card events -- status and title rows, idempotent on their own
+      // natural key each (see importKanbanCardEvent). A to_status-only skip
+      // here would silently drop every title event (it has no to_status).
       for (const ev of fleet.kanban?.cardEvents ?? []) {
-        const e = ev as any
-        if (!e.card_id || !e.to_status) continue
-        if (!db.prepare('SELECT 1 FROM kanban_card_events WHERE card_id = ? AND created_at = ? AND to_status = ?')
-          .get(e.card_id, e.created_at, e.to_status)) {
-          db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
-            .run(e.card_id, e.from_status ?? null, e.to_status, e.actor, e.created_at)
-        }
+        importKanbanCardEvent(ev as Parameters<typeof importKanbanCardEvent>[0])
       }
 
       for (const cl of fleet.kanban?.cardLabels ?? []) {
