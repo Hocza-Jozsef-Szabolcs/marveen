@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import {
   initDatabase,
   getDb,
@@ -11,9 +11,42 @@ import {
 } from '../db.js'
 
 // All tests use an in-memory SQLite database so they never touch the real store.
+//
+// generateEmbedding() (src/db.ts:2676) calls the real fetch() against
+// OLLAMA_URL -- unawaited from saveAgentMemory's fire-and-forget call
+// (src/db.ts:1357) and awaited from backfillEmbeddings (src/db.ts:2751-2764).
+// Before this stub, both paths hit a real local Ollama: the cache tests below
+// fire ~7 background embed calls, and whichever are still unresolved by the
+// time the backfillEmbeddings tests run were swept up by its own
+// "WHERE embedding IS NULL" query and re-embedded synchronously inside the
+// test -- racing real Ollama latency (0.1s warm, up to 90s cold/CPU-bound per
+// tool-timeouts.ts:10-13) against vitest's fixed 5000ms default test timeout.
+// Verified: pointing OLLAMA_URL at an unresponsive listener reproduces "Test
+// timed out in 5000ms" on both backfillEmbeddings tests with zero code
+// change -- the same failure mode a one-off flaky run showed.
+//
+// The fix is not a longer timeout (the next slower machine or busier host
+// brings the race back) -- it is removing the real network dependency. Only
+// the row carrying BACKFILL_TARGET_CONTENT gets a successful embedding from
+// the stub; every other prompt (the earlier saveAgentMemory calls) is
+// rejected, the same way an unreachable Ollama would be, so both branches of
+// generateEmbedding stay exercised without any timing dependency.
+const FAKE_EMBEDDING = [0.1, 0.2, 0.3]
+const BACKFILL_TARGET_CONTENT = 'Backfill target content'
+
 beforeAll(() => {
   process.env.NODE_ENV = 'test'
   initDatabase(':memory:')
+
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, opts: { body: string }) => {
+    const { prompt } = JSON.parse(opts.body) as { prompt: string }
+    if (prompt !== BACKFILL_TARGET_CONTENT) throw new Error('stub: simulated unreachable Ollama')
+    return { json: async () => ({ embedding: FAKE_EMBEDDING }) }
+  }))
+})
+
+afterAll(() => {
+  vi.unstubAllGlobals()
 })
 
 beforeEach(() => {
@@ -118,12 +151,13 @@ describe('getAgentMemories in-process cache', () => {
 // ---------------------------------------------------------------------------
 describe('backfillEmbeddings', () => {
   it('returns 0 when all memories already have embeddings or Ollama is unreachable', async () => {
-    // In the test environment Ollama is not running; the function must
-    // complete gracefully and return 0 (no memories without embeddings
-    // that it could successfully embed).
+    // Every pending row at this point comes from the cache tests above, none
+    // of which carry BACKFILL_TARGET_CONTENT, so the stub (see beforeAll)
+    // rejects each one -- deterministically reproducing the "Ollama
+    // unreachable" branch instead of depending on whether a real Ollama
+    // happens to be reachable on the machine running the suite.
     const count = await backfillEmbeddings()
-    expect(typeof count).toBe('number')
-    expect(count).toBeGreaterThanOrEqual(0)
+    expect(count).toBe(0)
   })
 
   it('processes rows without embeddings and updates them when Ollama responds', async () => {
@@ -136,27 +170,20 @@ describe('backfillEmbeddings', () => {
       `INSERT INTO memories (chat_id, topic_key, content, sector, salience,
        created_at, accessed_at, agent_id, category, auto_generated, keywords)
        VALUES (?, NULL, ?, 'semantic', 1.0, ?, ?, ?, 'cold', 0, NULL)`
-    ).run('test-chat', 'Backfill target content', now, now, BACKFILL_AGENT)
+    ).run('test-chat', BACKFILL_TARGET_CONTENT, now, now, BACKFILL_AGENT)
     const id = Number(result.lastInsertRowid)
 
-    // Stub generateEmbedding so the test does not depend on a live Ollama.
-    // We reach into the module internals via the DB update path and verify
-    // the row stays untouched when the stub returns null (Ollama unavailable).
     const rowBefore = db.prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
     expect(rowBefore.embedding).toBeNull()
 
-    // backfillEmbeddings calls generateEmbedding internally; without Ollama
-    // it returns null and the row remains NULL — that is the correct no-op path.
-    await backfillEmbeddings()
+    // Only this row's content matches the stub's success case (see
+    // beforeAll); every other pending row is rejected again, so the count is
+    // exactly 1 regardless of how many other NULL rows exist at this point.
+    const count = await backfillEmbeddings()
+    expect(count).toBe(1)
 
-    // No assertion on count here: it depends on whether Ollama is reachable.
-    // We just assert no exception is thrown and the row is still valid.
     const rowAfter = db.prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
-    // Embedding is either still null (Ollama unreachable) or a valid JSON array string.
-    if (rowAfter.embedding !== null) {
-      expect(() => JSON.parse(rowAfter.embedding!)).not.toThrow()
-      const parsed = JSON.parse(rowAfter.embedding!)
-      expect(Array.isArray(parsed)).toBe(true)
-    }
+    expect(rowAfter.embedding).not.toBeNull()
+    expect(JSON.parse(rowAfter.embedding!)).toEqual(FAKE_EMBEDDING)
   })
 })
