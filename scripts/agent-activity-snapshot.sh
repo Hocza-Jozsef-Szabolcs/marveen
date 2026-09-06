@@ -9,9 +9,19 @@
 # 🛑 AZ "ALL:" NEM JELENT AUTOMATIKUSAN BEAKADAST, HA A NYITOTT KARTYAN AZ ELOZO MERES OTA
 #   FRISS KOMMENT ERKEZETT -- ez SZANDEKOSAN leallitott fejre utal (gazda leallitotta, a fej
 #   dontesre var), nem beakadasra. Ilyenkor a sor "var:"-tal indul, NEM "ALL:"-lal. A kulonbseg
-#   a nyitott kartya(k) legfrissebb kommentjenek EPOCH-ja es az ELOZO snapshot-fajl mtime-ja
-#   kozotti osszevetes -- STRUKTURALT jel (idobelyeg), nem szoveg-egyezes a komment tartalmara
-#   (merve 2026-08-14: activity-snapshot-hamis-pozitiv-szandekos-leallas-20260814).
+#   a nyitott kartya(k) legfrissebb kommentjenek EPOCH-ja es a JELENLEGI ctx-PLATO KEZDETENEK
+#   (a store 7. mezoje, "valtozatlan_ota") osszevetese -- STRUKTURALT jel (idobelyeg), nem
+#   szoveg-egyezes a komment tartalmara (merve 2026-08-14:
+#   activity-snapshot-hamis-pozitiv-szandekos-leallas-20260814).
+#
+# 🛑 A REFERENCIAPONT NEM A SNAPSHOT-FAJL MTIME-JA -- az egy KORABBI valtozat volt, es CSAK
+#   az ELSO osszehasonlitasnal helyes: a store MINDEN futtataskor felulirodik, a mtime tehat
+#   MINDEN korben elorecsuszik, mikozben a komment epoch-ja fix marad. A MASODIK (es minden
+#   tovabbi) kortol a valtozatlan komment mar "reginek" szamitott volna a friss mtime-hoz
+#   kepest, es a mero visszavaltott ALL:-ra egy TARTOSAN, szandekosan allo fejre -- ugyanaz a
+#   hibaosztaly, amiert ez a kartya szuletett, csak egy korrel elhalasztva (merve 2026-09-06).
+#   A "valtozatlan_ota" AKKOR es CSAK AKKOR ugrik MOST-ra, ha a ctx TENYLEGESEN valtozott az
+#   elozo korhoz kepest -- kulonben oroklodik, tehat tetszoleges szamu korig stabil marad.
 #
 # 🛑 A "form:" SOROK NEM "uj"-kent kezelt fejek -- az ELOZO snapshot-fajlban a soruk MAR
 #   letezett, de NEM hatmezos (a store formatumot valtott azota, hogy a sor irodott). Ha ezt
@@ -98,14 +108,31 @@ for a in agents:
 '
 }
 
-# hu: A KULONBSEG-logika (verdikt: ALL: / var: / megy / uj / ---) KULON fuggveny -- fajlokbol
-#   dolgozik (nincs curl, nincs tmux, nincs sqlite), ezert onmagaban tesztelheto. A `--diff-only`
-#   CLI-mod pontosan EZT hivja, ugyanazt a kodutat, amit az eles futas is hasznal.
-# en: Verdict logic factored out so it is testable in isolation (file-driven, no live deps).
+# hu: A KULONBSEG-logika (verdikt: ALL: / var: / megy / uj / --- / form:) KULON fuggveny --
+#   fajlokbol dolgozik (nincs curl, nincs tmux, nincs sqlite), ezert onmagaban tesztelheto. A
+#   `--diff-only` CLI-mod pontosan EZT hivja, ugyanazt a kodutat, amit az eles futas is hasznal.
+#   MELLEKTERMEKKENT a DUSITOTT (het mezos) sorokat is kiirja egy fajlba (3. parameter) -- ezt
+#   menti a hivo a kovetkezo kor PREV fajljakent.
+#
+# 🛑 A 7. MEZO ("valtozatlan_ota") A JELENLEGI ctx-PLATO KEZDETE, NEM A FAJL MTIME-JA. A regi
+#   valtozat a PREV FAJL MTIME-JAHOZ hasonlitotta a komment epoch-jat -- ez CSAK az ELSO
+#   osszehasonlitasnal helyes, mert a store MINDEN futtataskor felulirodik, a mtime tehat
+#   MINDEN korben elorecsuszik, mikozben a komment epoch-ja fix marad. A MASODIK (es minden
+#   tovabbi) kortol a REGI, valtozatlan komment mar "reginek" szamitott volna a friss
+#   mtime-hoz kepest, es a mero visszavaltott ALL:-ra egy TARTOSAN, szandekosan allo fejre
+#   (merve 2026-09-06: ket egymas utani --diff-only hivassal reprodukalva, ugyanaz a hibaosztaly,
+#   mint amiert ez a kartya szuletett -- a var: csak egy ciklusig vedett).
+#   A plato kezdete AKKOR es CSAK AKKOR frissul MOST-ra, ha a ctx TENYLEGESEN valtozott az
+#   elozo korhoz kepest -- kulonben oroklodik a PREV sorbol, tehat tetszoleges szamu korig
+#   stabil marad, amig a fej allapota valtozatlan.
+# en: Verdict logic factored out so it is testable in isolation. The 7th field records when the
+#   current ctx-plateau began, not the snapshot file's mtime -- the mtime approach only worked
+#   for a single comparison cycle, because the store file is rewritten every run.
 osszehasonlit() {
-  local prev="$1" uj="$2"
-  AGENT_PREV="$prev" AGENT_NEW="$uj" python3 - <<'PYEOF'
+  local prev="$1" uj="$2" dusitott="${3:-}"
+  AGENT_PREV="$prev" AGENT_NEW="$uj" AGENT_ENRICHED="$dusitott" python3 - <<'PYEOF'
 import os
+import time
 
 prev_file = os.environ["AGENT_PREV"]
 prev = {}
@@ -115,21 +142,20 @@ try:
         r = s.split()
         if not r:
             continue
-        if len(r) == 6:
+        if len(r) == 7:
             prev[r[0]] = r
         else:
-            # 🛑 REGI/ISMERETLEN FORMATUMU SOR -- ez NEM "nincs elozo meres" (uj), hanem a
-            #   store formatumot valtott. Csendben "uj"-kent kezelve MINDEN fej ALL:/var:
-            #   dontese elmarad ugyanabban a korben, es a kimenet egy legitim elso futastol
-            #   lathatatlanul kulonbozik (merve 2026-08-24, ordog fuggetlen atmerese).
+            # 🛑 REGI/ISMERETLEN FORMATUMU SOR (pl. a korabbi hatmezos alak) -- ez NEM
+            #   "nincs elozo meres" (uj), hanem a store formatumot valtott. Csendben
+            #   "uj"-kent kezelve MINDEN fej ALL:/var: dontese elmarad ugyanabban a korben,
+            #   es a kimenet egy legitim elso futastol lathatatlanul kulonbozik
+            #   (merve 2026-08-24, ordog fuggetlen atmerese).
             malformed.add(r[0])
 except FileNotFoundError:
     pass
 
-try:
-    prev_mtime = os.path.getmtime(prev_file)
-except OSError:
-    prev_mtime = 0
+NOW = int(time.time())
+enriched = []
 
 for s in open(os.environ["AGENT_NEW"]):
     r = s.split()
@@ -142,15 +168,26 @@ for s in open(os.environ["AGENT_NEW"]):
             print(f"  uj    {nev}: nincs elozo meres")
         else:
             print(f"  form: {nev}: elozo meres regi/ismeretlen formatumu -- ALL:/var: dontes nem allapithato meg")
+        valtozatlan_ota = NOW
+        enriched.append(f"{nev} {ctx} {nyitott} {ures} {statuszok} {komment_ido} {valtozatlan_ota}")
         continue
+
+    if ctx == p[1]:
+        try:
+            valtozatlan_ota = int(p[6])
+        except ValueError:
+            valtozatlan_ota = NOW
+    else:
+        valtozatlan_ota = NOW
+
     if ctx == p[1] and ures == "1" and nyitott not in ("0", "?"):
         try:
             ki = int(komment_ido)
         except ValueError:
             ki = 0
-        if ki > prev_mtime:
+        if ki > valtozatlan_ota:
             print(f"  var:  {nev} -- {statuszok}, {nyitott} nyitott kartya, "
-                  f"FRISS komment az elozo meres ota -- NEM beakadas")
+                  f"FRISS komment a jelenlegi allapot-plato kezdete ota -- NEM beakadas")
         else:
             print(f"  ALL:  {nev} -- ctx VALTOZATLAN ({ctx}), ures prompt, "
                   f"{nyitott} nyitott kartya ({statuszok})")
@@ -158,11 +195,19 @@ for s in open(os.environ["AGENT_NEW"]):
         print(f"  megy  {nev}: {p[1]} -> {ctx}")
     else:
         print(f"  ---   {nev}: ctx valtozatlan, de nem all (ures={ures}, nyitott={nyitott})")
+
+    enriched.append(f"{nev} {ctx} {nyitott} {ures} {statuszok} {komment_ido} {valtozatlan_ota}")
+
+enriched_out = os.environ.get("AGENT_ENRICHED")
+if enriched_out:
+    with open(enriched_out, "w") as f:
+        for sor in enriched:
+            f.write(sor + "\n")
 PYEOF
 }
 
 if [ "${1:-}" = "--diff-only" ]; then
-  osszehasonlit "$2" "$3" >&2
+  osszehasonlit "$2" "$3" "${4:-}" >&2
   exit 0
 fi
 
@@ -195,13 +240,20 @@ if [ -f "$SNAP_FILE" ]; then
   # SOHA NEM FUTOTT LE. A script kimenete es kilepesi kodja valtozatlanul jonak latszott.
   # A sajat ellen-probam is ATENGEDTE: nullat szamolt, de azert, mert semmi nem futott. (Merve.)
   UJ_TMP="$(mktemp)"
+  DUSITOTT_TMP="$(mktemp)"
   printf '%s\n' "$uj" > "$UJ_TMP"
   # A KULONBSEG a lenyeg, nem a pillanatfelvetel -- lasd az `osszehasonlit()` fuggveny.
-  osszehasonlit "$SNAP_FILE" "$UJ_TMP" >&2
+  # A store-ba a DUSITOTT (het mezos, "valtozatlan_ota" platokezdettel biroitott) sorok
+  # kerulnek, NEM a nyers `$uj` -- kulonben a plato-kezdet minden korben elveszne.
+  osszehasonlit "$SNAP_FILE" "$UJ_TMP" "$DUSITOTT_TMP" >&2
   rm -f "$UJ_TMP"
+  cp "$DUSITOTT_TMP" "$SNAP_FILE"
+  rm -f "$DUSITOTT_TMP"
 else
   echo "elso futas -- nincs mihez merni, a kovetkezo kor mar osszevet" >&2
+  # Elso futas: minden fej plato-ja MOST kezdodik.
+  NOW="$(date +%s)"
+  printf '%s\n' "$uj" | awk -v now="$NOW" 'NF { print $0, now }' > "$SNAP_FILE"
 fi
 
-printf '%s\n' "$uj" > "$SNAP_FILE"
 printf '%s\n' "$uj"

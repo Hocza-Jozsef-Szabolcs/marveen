@@ -50,12 +50,14 @@ epoch_set() {
 NOW=$(date +%s)
 PREV_MTIME=$((NOW - 3600))   # a legutobbi meres 1 oraja volt
 
-# ── Fixture: PREV snapshot -- mindharom fej ugyanazzal a ctx-szel indul, mtime = PREV_MTIME ────
+# ── Fixture: PREV snapshot -- mindharom fej ugyanazzal a ctx-szel indul, a plato kezdete
+#    (7. mezo) = PREV_MTIME, hogy a forgatokonyv ekvivalens maradjon a korabbi mtime-alapu
+#    szemantikaval ────────────────────────────────────────────────────────────────────────
 FPrev="$FTmp/prev.txt"
 cat > "$FPrev" <<EOF
-stuck1 202030 1 1 in_progress 0
-wait1 337835 1 1 in_progress 0
-oldcomment1 120280 1 1 in_progress 0
+stuck1 202030 1 1 in_progress 0 $PREV_MTIME
+wait1 337835 1 1 in_progress 0 $PREV_MTIME
+oldcomment1 120280 1 1 in_progress 0 $PREV_MTIME
 EOF
 epoch_set "$FPrev" "$PREV_MTIME"
 
@@ -93,7 +95,7 @@ check "T3 ALL: szerepel oldcomment1-re (a regi komment nem szamit frissnek)" "1"
 echo "── T4 (MUTACIO): a frissesseg-ellenorzes kivetele -> a T2 BUKJON vissza ───────────────"
 CMutans="$FTmp/agent-activity-snapshot-mutans.sh"
 awk '
-  /if ki > prev_mtime:/ { print "        if False:"; next }
+  /if ki > valtozatlan_ota:/ { print "        if False:"; next }
   { print }
 ' "$CScript" > "$CMutans"
 chmod +x "$CMutans"
@@ -142,6 +144,49 @@ else
   "$CMutans2" --diff-only "$FPrevOld" "$FNew" >"$FTmp/t6.out" 2>&1
   check "T6 a mutansnal oldformat1 TEVESEN 'uj'-t kap" "1" \
     "$(grep -qE '^ *uj *oldformat1' "$FTmp/t6.out" && echo 1 || echo 0)"
+fi
+
+echo "── T7 (TOBB CIKLUS): a mtime-alapu referenciapont visszavaltana ALL:-ra, a plato-  ─────"
+echo "    kezdet (7. mezo) alapu referenciapont NEM ─────────────────────────────────────────"
+# hu: a T1-T4 EGYETLEN osszehasonlitast tesztelt. Ha a referenciapont a PREV FAJL MTIME-ja
+#     (a regi kod), a MASODIK es minden tovabbi ciklustol a komment mar "reginek" szamit a
+#     friss mtime-hoz kepest, es a fej ALL:-t kap, holott az allapota valtozatlan (merve
+#     2026-09-06, ket egymas utani --diff-only hivassal). A PREV itt mar 7 mezos (a
+#     "valtozatlan_ota" plato-kezdet mezovel): a komment (REGI epoch) a PLATO KEZDETE UTAN
+#     keletkezett -- tehat frissnek szamit -- de a PREV FAJL MTIME-ja (amit epoch_set MOST-ra
+#     allit) UTANA van a kommentnek. A regi (mtime-alapu) logika ALL:-t adna, a helyes
+#     (plato-kezdet-alapu) logika var:-ot.
+PLATO_KEZDETE=500000000
+KOMMENT_A_PLATO_UTAN=500010000
+FPrevT7="$FTmp/prev-t7.txt"
+cat > "$FPrevT7" <<EOF
+fejx7 100000 1 1 in_progress $KOMMENT_A_PLATO_UTAN $PLATO_KEZDETE
+EOF
+touch "$FPrevT7"   # mtime = MOST -- jocskan a KOMMENT_A_PLATO_UTAN epoch utan
+FNewT7="$FTmp/new-t7.txt"
+cat > "$FNewT7" <<EOF
+fejx7 100000 1 1 in_progress $KOMMENT_A_PLATO_UTAN
+EOF
+"$CScript" --diff-only "$FPrevT7" "$FNewT7" >"$FTmp/t7.out" 2>&1
+check "T7 NEM ALL: fejx7-re (a plato kezdete a mervado, nem a fajl mtime)" "0" \
+  "$(grep -qE '^ *ALL: *fejx7' "$FTmp/t7.out" && echo 1 || echo 0)"
+check "T7 var: jelzes szerepel fejx7-re" "1" \
+  "$(grep -qE '^ *var: *fejx7' "$FTmp/t7.out" && echo 1 || echo 0)"
+
+echo "── T8 (MUTACIO): a plato-kezdet oroklese kivetele -> a T7 BUKJON vissza ───────────────"
+CMutans3="$FTmp/agent-activity-snapshot-mutans3.sh"
+awk '
+  /valtozatlan_ota = int\(p\[6\]\)/ { print "            valtozatlan_ota = NOW"; next }
+  { print }
+' "$CScript" > "$CMutans3"
+chmod +x "$CMutans3"
+if cmp -s "$CScript" "$CMutans3"; then
+  echo "  ❌ T8 a mutacio NEM valtoztatott a szkripten -- a minta elavult, a T8 vak"
+  FFail=$((FFail + 1))
+else
+  "$CMutans3" --diff-only "$FPrevT7" "$FNewT7" >"$FTmp/t8.out" 2>&1
+  check "T8 a mutansnal fejx7 TEVESEN ALL:-t kap" "1" \
+    "$(grep -qE '^ *ALL: *fejx7' "$FTmp/t8.out" && echo 1 || echo 0)"
 fi
 
 echo
