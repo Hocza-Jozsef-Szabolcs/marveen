@@ -66,6 +66,20 @@
 #     `nalam-all.sh` (ami a "meg valaszolatlan" oldalt fedi) es a kezi kartya-atolvasas marad
 #     a halo.
 #
+#     🛑 MERT TENY (2026-09-06, kartya ee8119ee): a haromfeltetelesen a nyolcbol NYOLC talalat
+#     HAMIS POZITIV volt -- mindegyikben a ME-valasz nem a fejet oldotta fel, hanem egy KULSo
+#     felre (Jozsi, Zoli, fizikai eszkoz) forditotta tovabb a dontest, es a valodi blokkolo
+#     tovabbra is allt. KET jelolt mechanikus (nem szoveg-mintazatos) megkulonbozteto merve
+#     ugyanezen a nyolc kartyan: (a) atfedes a `valaszolatlan-dontes-keres-figyelo.sh`
+#     kimenetevel -- 0/8, mert az csak a Jozsinak szolo, "elkuldve: {NNNN}" jelolo kommenttel
+#     dokumentalt esetet fedi, es egyik ME-valasz sem ilyen alaku; (b) nyers `{NNNN}` Telegram-
+#     sorszam jelenlete a ME-valasz szovegeben barhol -- 4/8, mert az eszkozre, digestbe
+#     sorolasra vagy sajat dontesre hivatkozo valaszokban nincs ilyen szam. EGYIK JELOLT SEM
+#     ERI EL A NYOLCBOL NYOLCAT, tehat SZURES NEM VEZETHETo BE (egy 5/8-9/8 fedesu szuro csak
+#     ujabb hamis pozitivot vagy hamis negativot cserelne a regi helyere). A VALASZTOTT UT:
+#     minden sor mellett megjelenik az utolso ME-valasz elso kb. 150 karaktere -- igy egy
+#     hamis pozitiv egy sor olvasasaval eldontheto, kartya-lekerdezes nelkul.
+#
 #     HOVA TARTOZIK A MUNKA-MOTOR KORBEN: KOZVETLENUL a nalam-all.sh UTAN, ugyanabban a
 #     korben, ugyanazon okbol -- a ket szkript egyutt fedi a `waiting`+`assignee=marveen`
 #     kartyak MINDKET oldalat (nalam-all.sh: meg nem valaszoltam; ez a szkript: valaszoltam,
@@ -81,6 +95,16 @@
 #     proximity -- a live-data run disproved the time-window version (19 false positives,
 #     including the documented false-positive card, because busy agent pairs exchange
 #     messages every few minutes about unrelated cards).
+#
+#     MEASURED FACT (2026-09-06, card ee8119ee): all eight matches from the three-condition
+#     filter were false positives -- in each, the ME answer forwarded the decision to an
+#     EXTERNAL party (Jozsi, Zoli, a physical device) instead of resolving it, so the real
+#     blocker still stands. Two mechanical (non-text-pattern) differentiator candidates were
+#     measured on the same eight cards: overlap with valaszolatlan-dontes-keres-figyelo.sh's
+#     output (0/8) and a bare `{NNNN}` Telegram sequence tag anywhere in the ME answer (4/8).
+#     Neither reaches eight of eight, so no filter is introduced -- instead, every line now
+#     prints the first ~150 characters of the last ME answer, so a false positive is decided
+#     by reading one line, without opening the card.
 #
 # Hasznalat / Usage: visszaadott-kartya-elmaradt-visszamozditas-figyelo.sh [ME]
 #   ME alapertelmezese: marveen.
@@ -148,12 +172,13 @@ for card in cards:
     fej = fej_row['author']
 
     valaszolt = conn.execute('''
-        SELECT 1 FROM kanban_comments
+        SELECT content FROM kanban_comments
         WHERE card_id=? AND author=? AND created_at > ?
-        LIMIT 1
+        ORDER BY created_at DESC LIMIT 1
     ''', (card_id, me, ev_ts)).fetchone()
     if valaszolt is None:
         continue
+    utolso_valasz = valaszolt['content'] or ''
 
     uzenetek = conn.execute('''
         SELECT content FROM agent_messages
@@ -162,14 +187,15 @@ for card in cards:
     if not any(ervenyes_hivatkozas(u['content'], card_id) for u in uzenetek):
         continue
 
-    flagged.append((card_id, fej, ev_ts, card['title']))
+    flagged.append((card_id, fej, ev_ts, card['title'], utolso_valasz))
 
 if not flagged:
     sys.exit(0)
 
 now = conn.execute(\"SELECT CAST(strftime('%s','now') AS INTEGER)\").fetchone()[0]
 print('VISSZAADOTT KARTYA, VALASZ MEGVAN, A STATUSZ-VISSZAMOZDITAS ELMARADT (%s neven):' % me)
-for card_id, fej, ev_ts, title in flagged:
+for card_id, fej, ev_ts, title, utolso_valasz in flagged:
     perc = round((now - ev_ts) / 60.0)
-    print('  %-12s %-10s %5d perc a visszaadas ota -- %s' % (card_id, fej, perc, title[:80]))
+    reszlet = ' '.join(utolso_valasz.split())[:150]
+    print('  %-12s %-10s %5d perc a visszaadas ota -- %s -- utolso valasz: %s' % (card_id, fej, perc, title[:80], reszlet))
 "
