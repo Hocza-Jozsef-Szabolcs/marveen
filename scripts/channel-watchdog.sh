@@ -48,6 +48,11 @@ set -u
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STORE="$INSTALL_DIR/store"
+
+# hu: launchd-biztos node-ut feloldas (nem csak PATH) -- lasd scripts/node-bin.sh.
+# en: launchd-safe node path resolution (not PATH-only) -- see scripts/node-bin.sh.
+. "$INSTALL_DIR/scripts/node-bin.sh"
+
 KEEPALIVE_FILE="$STORE/.channel-keepalive"
 RESPAWN_STAMP="$STORE/.channel-last-respawn"
 RESPAWN_COUNT_FILE="$STORE/.channel-watchdog-respawns"
@@ -122,7 +127,7 @@ fi
 AUTHDEAD=false
 auth_count=$(cat "$AUTH_DEAD_COUNT_FILE" 2>/dev/null || echo 0)
 case "$auth_count" in (*[!0-9]*|'') auth_count=0;; esac
-NODE_BIN="$(command -v node || true)"
+NODE_BIN="$(resolve_node_bin || true)"
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then
   probe_out="$("$TMUX_BIN" capture-pane -p -t "$SESSION" 2>/dev/null | "$NODE_BIN" "$INSTALL_DIR/scripts/channels-auth-probe.mjs" 2>/dev/null)"
   probe_exit=$?

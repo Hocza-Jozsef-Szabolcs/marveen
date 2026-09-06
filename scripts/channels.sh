@@ -19,6 +19,10 @@
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# hu: launchd-biztos node-ut feloldas (nem csak PATH) -- lasd scripts/node-bin.sh.
+# en: launchd-safe node path resolution (not PATH-only) -- see scripts/node-bin.sh.
+. "$INSTALL_DIR/scripts/node-bin.sh"
+
 # --- orphan-reaper hatókör (2. pass) -----------------------------------------
 # hu: Melyik csatorna-poller a MIENK? POZITIV azonositas: a processz
 #     kornyezeteben a SAJAT telepitesi konyvtarunk all egy csatorna-definialo
@@ -353,6 +357,13 @@ if [ "${1:-}" = "--classify-unlock-residue" ]; then
   exit 0
 fi
 
+# Test seam: proves THIS file is wired to the launchd-safe resolver (not a raw
+# `command -v node`) -- see scripts/test-node-bin-resolve.sh T5.
+if [ "${1:-}" = "--resolve-node-bin" ]; then
+  resolve_node_bin || true
+  exit 0
+fi
+
 # Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
 # before launch. A PR review-reset or branch-switch that reverts
 # .claude/settings.json can silently drop the entry and disable the channel
@@ -575,7 +586,7 @@ CFG_ENV=""
 #     at the end of the block but the channel-state resolution needs it later.
 MAIN_CFG_DIR=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
-_node_bin="$(command -v node || true)"
+_node_bin="$(resolve_node_bin || true)"
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   _cfg_line="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
   _cfg_mode="${_cfg_line%%	*}"
