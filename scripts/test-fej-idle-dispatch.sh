@@ -82,6 +82,15 @@ CREATE TABLE agent_messages (
   status TEXT NOT NULL DEFAULT 'pending',
   created_at INTEGER NOT NULL
 );
+CREATE TABLE kanban_card_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id TEXT NOT NULL,
+  event_type TEXT NOT NULL DEFAULT 'status',
+  from_status TEXT,
+  to_status TEXT,
+  actor TEXT,
+  created_at INTEGER NOT NULL
+);
 SQLEOF
 
   # A kiosztas-mock: naplozza a hivast, es kilepesi kodot ad. A kod forrasa elsobbseggel:
@@ -140,6 +149,14 @@ seed_comment() {
   local card_id="$1" content="$2" created_at="${3:-0}" author="${4:-teszt}"
   sqlite3 "$FTmp/root/store/claudeclaw.db" \
     "insert into kanban_comments (card_id,author,content,created_at) values ('$card_id','$author','$content',$created_at);"
+}
+
+# hu: egy kanban_card_events sort szur be -- a kartya_planned_ota_kommentelve() ezt hasznalja
+#     referenciakent: mikor kerult a kartya utoljara 'planned'-be.
+seed_event() {
+  local card_id="$1" to_status="$2" created_at="${3:-0}" from_status="${4:-}"
+  sqlite3 "$FTmp/root/store/claudeclaw.db" \
+    "insert into kanban_card_events (card_id,from_status,to_status,actor,created_at) values ('$card_id',nullif('$from_status',''),'$to_status','teszt',$created_at);"
 }
 
 # hu: a futo fejek listaja -- delphi ABECEBEN design es ereceipt ELOTT all, ahogy elesben is.
@@ -1258,6 +1275,79 @@ else
   chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
   rc=$(run_script)
   check "T69 mutansnal a kartyat delphi MEGIS megkapja (a T66 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi delphi')"
+fi
+
+echo
+
+# ── T70-T73: A PLANNED-BE KERULES OTA ERKEZETT KOMMENT MEGALLITJA A KIOSZTAST (15b3fd54) ───────
+# Elo eset, teteles idorenddel (2026-09-06): a K-kartya 10:54:26-kor kerult 'planned'-be, a fej
+# UJ leletet mert es JAVITOTTA a targyat KET kommentben (11:06:49, 11:11:47), es NEGY perccel a
+# masodik komment UTAN (11:15:43) a fej-idle-dispatch a status='planned' mezo alapjan UJRA
+# kiosztotta UGYANAZT a kartyat -- a munka mar keszen allt. A munka-motor 2/b pontja ("nezd meg
+# git-loggal/kommenttel, nincs-e mar kesz") EMBERI lepesre van irva egy GEPI folyamatban: az
+# automatikus dispatch elott ez soha nem futott le. A komment-alapu jel az olcsobb es a
+# megbizhatobb (nem fugg repotol, egyetlen lekerdezes): ha a kartyan a LEGUTOLSO 'planned'-be
+# lepes OTA barmilyen komment erkezett, a kiosztas alljon meg es a koordinator nezze at.
+echo "── T70: a kartya PLANNED-be kerulese OTA erkezett komment -> KIHAGYVA, mas fej kartyaja zavartalan ─"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-mar-kesz planned delphi normal 0 "Mert teny, mit kell tenni, elfogadasi feltetel."
+seed_event K-delphi-mar-kesz planned 100 in_progress
+seed_comment K-delphi-mar-kesz "Javitva, commit abc123, pusholva." 200 delphi
+seed_card K-design planned design
+rc=$(run_script)
+check "T70 a mar javitott kartyat delphi NEM probalta"      "0" "$(hivas_szam 'KIOSZTAS: K-delphi-mar-kesz delphi')"
+check "T70 KIHAGYVA jelzes a kimenetben"                    "1" "$(grep -c 'KIHAGYVA: delphi -> K-delphi-mar-kesz' "$FTmp/kimenet")"
+check "T70 a masik fej kartyaja zavartalanul kiosztva"      "1" "$(hivas_szam 'KIOSZTAS: K-design design')"
+check "T70 kilepesi kod 0"                                  "0" "$rc"
+
+echo "── T71: a komment a planned-esemeny ELOTT kelt (korabbi, magyarazo komment) -> NORMALISAN kiosztva ─"
+# A kanban-kiosztas-validacio skill kivetel-esete: "tedd vissza a regi kartyat planned-be egy
+# kommenttel" -- ott a komment MEGELOZI a planned-atallast, ez nem szabad, hogy blokkoljon.
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-elozetes planned delphi normal 0 "Mert teny, mit kell tenni, elfogadasi feltetel."
+seed_comment K-delphi-elozetes "Felfuggesztve, X elore veszi." 50 marveen
+seed_event K-delphi-elozetes planned 100 waiting
+rc=$(run_script)
+check "T71 a kartyat delphi megkapta (a korabbi komment nem blokkol)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-elozetes delphi')"
+check "T71 kilepesi kod 0"                                            "0" "$rc"
+
+echo "── T72: NINCS planned-ota komment (esemeny sincs, komment sincs) -> NORMALISAN kiosztva (hamis pozitiv kizarva) ─"
+setup_case
+printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+seed_card K-delphi-tiszta planned delphi
+rc=$(run_script)
+check "T72 a kartyat delphi megkapta"  "1" "$(hivas_szam 'KIOSZTAS: K-delphi-tiszta delphi')"
+check "T72 nincs KIHAGYVA jelzes"       "0" "$(grep -c 'KIHAGYVA: delphi -> K-delphi-tiszta' "$FTmp/kimenet")"
+check "T72 kilepesi kod 0"              "0" "$rc"
+
+echo "── T73 (MUTACIO): a planned-ota-komment ellenorzes kivetele -> a T70 BUKJON vissza ──"
+CMutans70="$FTmp/fej-idle-dispatch-mutans70.sh"
+python3 - "$CScript" "$CMutans70" <<'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding='utf-8').read()
+new = re.sub(
+    r"\n *if kartya_planned_ota_kommentelve \"\$card\"; then\n.*?\n *fi\n",
+    "\n",
+    text, count=1, flags=re.S,
+)
+if new != text:
+    open(dst, 'w', encoding='utf-8').write(new)
+PYEOF
+if [ ! -s "$CMutans70" ] || cmp -s "$CScript" "$CMutans70" 2>/dev/null; then
+  echo "  ⚠️  T73 elohivo minta nem talalt (a javitas meg nem kesz) -- mutacio egyelore kihagyva"
+else
+  setup_case
+  printf '%s' "$FAgentsJson" > "$FTmp/agents.json"
+  seed_card K-delphi-mar-kesz planned delphi normal 0 "Mert teny, mit kell tenni, elfogadasi feltetel."
+  seed_event K-delphi-mar-kesz planned 100 in_progress
+  seed_comment K-delphi-mar-kesz "Javitva, commit abc123, pusholva." 200 delphi
+  cp "$CMutans70" "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  chmod +x "$FTmp/root/scripts/fej-idle-dispatch.sh"
+  rc=$(run_script)
+  check "T73 mutansnal a mar-kesz kartyat delphi MEGIS megkapja (a T70 visszajon)" "1" "$(hivas_szam 'KIOSZTAS: K-delphi-mar-kesz delphi')"
 fi
 
 echo

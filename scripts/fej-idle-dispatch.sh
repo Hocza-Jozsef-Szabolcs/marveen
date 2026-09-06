@@ -268,6 +268,30 @@ fej_frissen_hatterben_dolgozik() {
   echo "$utolso_uzenet" | grep -qiE 'hatt[ée]r(ben|be)|background'
 }
 
+# 🛑 A MUNKA-MOTOR 2/b PONTJA ("nezd meg git-loggal/kommenttel, nincs-e mar kesz a munka") EMBERI
+#    lepesre van irva, a dispatch viszont GEPI (kartya 15b3fd54, mert eset, teteles idorenddel,
+#    2026-09-06): a kartya 10:54:26-kor kerult 'planned'-be, a fej UJ leletet mert es JAVITOTTA a
+#    targyat KET kommentben (11:06:49, 11:11:47), es NEGY perccel a masodik komment UTAN
+#    (11:15:43) ez a szkript a status='planned' mezo alapjan UJRA kiosztotta UGYANAZT a kartyat --
+#    a munka mar keszen allt. A 2/b ellenorzes SOHA nem fut le a dispatch elott, mert nincs olyan
+#    pont a folyamatban, ahol lefuthatna.
+#    A KOMMENT-ALAPU JEL AZ OLCSOBB ES A MEGBIZHATOBB: a kartya-ID amugy is szerepel a commit
+#    elso soraban (a commit-rend szerint), de a komment-idobelyeg osszehasonlitasa a
+#    statusz-valtas idejevel EGYETLEN lekerdezes, es nem fugg a repotol.
+#    A referencia-idopont a kartya LEGUTOLSO 'planned'-be lepese (kanban_card_events,
+#    to_status='planned') -- ha ilyen esemeny meg nem tortent (a kartya a letrehozasa ota
+#    folyamatosan planned), a kartya sajat created_at-ja a referencia.
+kartya_planned_ota_kommentelve() {
+  local card="$1" ref n
+  ref=$(sqlite3 "$DB" "select coalesce(
+    (select max(created_at) from kanban_card_events where card_id='$card' and to_status='planned'),
+    (select created_at from kanban_cards where id='$card')
+  );")
+  [ -z "$ref" ] && return 1
+  n=$(sqlite3 "$DB" "select count(*) from kanban_comments where card_id='$card' and created_at > $ref;")
+  [ "${n:-0}" -gt 0 ]
+}
+
 active=$(sqlite3 "$DB" "select assignee from kanban_cards where status in ('in_progress','testing') and archived_at is null and assignee is not null group by assignee;")
 
 idle=$(comm -23 <(echo "$running" | sort -u) <(echo "$active" | sort -u))
@@ -330,7 +354,15 @@ for fej in $idle; do
   fi
   kiosztva=0
   hatokor_kihagyva=0
+  komment_kihagyva=0
   for card in $cards; do
+    # 🛑 EZ ELOSZOR FUT, MINDEN kartyara -- nem csak a fallback-agon -- mert a mert eset (15b3fd54)
+    #    egy SAJAT NEVRE allitott kartyan tortent, nem delegalatlanon.
+    if kartya_planned_ota_kommentelve "$card"; then
+      echo "KIHAGYVA: $fej -> $card -- a kartyan a planned-be tetel OTA erkezett komment -- ELLENORIZD, a munka mar keszen allhat"
+      komment_kihagyva=1
+      continue
+    fi
     # 🛑 SZAKTERULET-EGYEZTETES (72df44eb, szigoritva 22372f05) -- CSAK a fallback-agon
     #    (delegalatlan/marveen-nevu kartyan), ahol a SZKRIPT dont a cimzettrol. Mert eset:
     #    backend ketszer JokerQ/VHR temaju delegalatlan kartyat kapott (2ad01092), clicpu
@@ -413,6 +445,8 @@ for fej in $idle; do
   if [ "$kiosztva" = "0" ]; then
     if [ "$hatokor_kihagyva" = "1" ]; then
       echo "TETLEN: $fej -- csak hatokorbe nem illo delegalatlan/marveen kartya volt, hatokor-egyezes hijan egyet sem oszt ki"
+    elif [ "$komment_kihagyva" = "1" ]; then
+      echo "TETLEN: $fej -- MINDEGYIK planned kartyajan a planned-be tetel ota erkezett komment, ELLENORIZD mielott kezzel kiosztod"
     else
       echo "TETLEN: $fej -- MINDEGYIK planned kartyaja elbukott a kiosztas-kapun"
     fi
