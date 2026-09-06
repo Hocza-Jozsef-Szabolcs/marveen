@@ -36,6 +36,7 @@ let home: string
 let sent: Array<{ url: string; chatId: unknown }>
 let originalHome: string | undefined
 let originalChat: string | undefined
+let originalStateDir: string | undefined
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'freshinstall-'))
@@ -47,6 +48,13 @@ beforeEach(() => {
   )
   originalHome = process.env['HOME']
   originalChat = process.env['ALLOWED_CHAT_ID']
+  // channelStateDir() checks this override BEFORE falling back to HOME (see
+  // channel-provider.ts). A fleet install exports its own TELEGRAM_STATE_DIR
+  // in every agent's shell, which then wins over the fixture's HOME and makes
+  // this suite read the REAL access.json instead of the one written above --
+  // pass regardless of who is running it.
+  originalStateDir = process.env['TELEGRAM_STATE_DIR']
+  delete process.env['TELEGRAM_STATE_DIR']
   process.env['HOME'] = home
 
   sent = []
@@ -68,6 +76,8 @@ afterEach(() => {
   else process.env['HOME'] = originalHome
   if (originalChat === undefined) delete process.env['ALLOWED_CHAT_ID']
   else process.env['ALLOWED_CHAT_ID'] = originalChat
+  if (originalStateDir === undefined) delete process.env['TELEGRAM_STATE_DIR']
+  else process.env['TELEGRAM_STATE_DIR'] = originalStateDir
   rmSync(home, { recursive: true, force: true })
 })
 
